@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "Wireless Mouse Remote",
+    "slug": "wirelessmouseapk",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#0f172a"
+    },
+    "android": {
+      "package": "com.wirelessmouse.remote",
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "ACCESS_WIFI_STATE",
+        "CHANGE_WIFI_MULTICAST_STATE"
+      ]
+    },
+    "extra": {
+      "eas": {
+        "projectId": "91fcd97c-f150-4d8d-9c3b-03c377914f26"
+      }
+    },
+    "owner": "kunalmodi117"
+  }
+}

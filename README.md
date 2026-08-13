@@ -74,10 +74,52 @@ If you only want to test the UI shell and manual connection flow, you can also r
 npx expo start
 ```
 
+## Build Locally On Your Laptop
+
+Yes. You can build and install the Android app locally without using the EAS cloud build quota.
+
+### Fast local dev build
+
+If you have Android Studio and the Android SDK installed:
+
+```bash
+cd /home/web-lp-021/PersonalProjects/WirelessMouseAPK/mobile
+npm install
+npx expo run:android
+```
+
+For a physical Android phone over USB debugging:
+
+```bash
+npx expo run:android --device
+```
+
+### Local EAS build
+
+If you want the EAS pipeline but running on your laptop instead of Expo's servers:
+
+```bash
+npx eas build --platform android --local
+```
+
+Notes:
+
+- Local EAS builds need Android SDK installed on the laptop.
+- Expo documents local EAS builds for Linux and macOS.
+- For Windows, Expo notes local EAS builds are not officially supported, though WSL may work.
+
+### Release-style local build
+
+If you want a release-flavored build locally:
+
+```bash
+npx expo run:android --variant release
+```
+
 Note:
 
-- UDP discovery and UDP move packets are best tested with an Expo development client.
 - Manual IP connection still works as the fallback path.
+- The app should now launch without the earlier native-module crash.
 
 ## Connect The Phone To The PC
 
@@ -93,4 +135,3 @@ Note:
 
 - The desktop server is already structured to stay friendly to `pkg`.
 - If you want a standalone Windows executable later, we can add a build script after Phase 4.
-
