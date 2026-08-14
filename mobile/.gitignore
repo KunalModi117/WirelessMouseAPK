@@ -4,8 +4,6 @@ node_modules/
 # Expo generated files
 .expo/
 .eas/
-android/
-ios/
 dist/
 build/
 

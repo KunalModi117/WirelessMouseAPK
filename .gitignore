@@ -5,8 +5,6 @@ mobile/node_modules/
 # Expo / mobile generated files
 mobile/.expo/
 mobile/.eas/
-mobile/android/
-mobile/ios/
 mobile/*.apk
 mobile/*.aab
 

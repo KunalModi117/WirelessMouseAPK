@@ -253,7 +253,7 @@ export default function App() {
 
   function scheduleReconnect() {
     stopReconnectLoop();
-    addDebugLog('info', 'Reconnect scheduled', 'retrying in 1.2s');
+    addDebugLog('info', 'Reconnect scheduled', 'retrying in 3.5s');
     reconnectTimerRef.current = setTimeout(() => {
       const next = activeServerRef.current || discovered[0];
       if (next) {
@@ -268,7 +268,7 @@ export default function App() {
           discoveryPort: target.discoveryPort
         }, true);
       }
-    }, 1200);
+    }, 3500);
   }
 
   function sendWs(payload) {
