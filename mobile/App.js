@@ -1,3 +1,4 @@
+import 'react-native-gesture-handler';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -100,7 +101,7 @@ export default function App() {
   const dragActiveRef = useRef(false);
   const logsRef = useRef([]);
 
-  const discoveryEnabled = false;
+  const discoveryEnabled = true;
 
   function addDebugLog(level, message, details = '') {
     const entry = {
@@ -143,6 +144,67 @@ export default function App() {
   useEffect(() => {
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(settings)).catch(() => {});
   }, [settings]);
+
+  // Subnet Scanning HTTP Discovery for local Wi-Fi
+  useEffect(() => {
+    if (!discoveryEnabled || manualMode) {
+      return;
+    }
+    let isCancelled = false;
+    addDebugLog('info', 'Subnet scanning started', 'Scanning 41235/health on local subnets');
+
+    const scanSubnets = async () => {
+      const subnets = ['192.168.1', '192.168.0', '192.168.2', '10.0.0', '10.0.2'];
+      const candidateIps = ['127.0.0.1', '10.0.2.2'];
+
+      for (const prefix of subnets) {
+        for (let i = 1; i <= 254; i++) {
+          candidateIps.push(`${prefix}.${i}`);
+        }
+      }
+
+      const foundList = [];
+      const batchSize = 25;
+
+      for (let i = 0; i < candidateIps.length; i += batchSize) {
+        if (isCancelled) break;
+        const batch = candidateIps.slice(i, i + batchSize);
+        await Promise.all(
+          batch.map(async (ip) => {
+            try {
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), 1200);
+              const res = await fetch(`http://${ip}:41235/health`, {
+                signal: controller.signal
+              });
+              clearTimeout(timer);
+              if (res.ok) {
+                const data = await res.json();
+                if (data && data.app === 'WirelessMouseKeyboardRemote') {
+                  const targetObj = normalizeDiscoveredTarget(data, ip);
+                  if (!foundList.some((item) => item.ip === targetObj.ip)) {
+                    foundList.push(targetObj);
+                    if (!isCancelled) {
+                      setDiscovered([...foundList]);
+                      addDebugLog('info', 'Discovered PC server', `${targetObj.ip}:${targetObj.wsPort}`);
+                    }
+                  }
+                }
+              }
+            } catch (_) {}
+          })
+        );
+      }
+    };
+
+    scanSubnets();
+
+    const interval = setInterval(scanSubnets, 10000);
+    return () => {
+      isCancelled = true;
+      clearInterval(interval);
+    };
+  }, [discoveryEnabled, manualMode]);
 
   useEffect(() => {
     return () => {
