@@ -347,15 +347,14 @@ export default function App() {
       }
       try {
         const payload = JSON.parse(event.data);
-        if (payload.type === 'pong') {
-          lastPongAtRef.current = Date.now();
-          return;
-        }
-        if (payload.type === 'welcome') {
+        lastPongAtRef.current = Date.now();
+        if (payload.type === 'welcome' || payload.type === 'handshake-ack') {
           setConnectedHost(`${payload.serverIp || server.ip}:${payload.httpPort || server.wsPort}`);
           addDebugLog('info', 'Handshake received', JSON.stringify(payload));
         }
-      } catch (_) {}
+      } catch (_) {
+        lastPongAtRef.current = Date.now();
+      }
     };
 
     socket.onerror = (event) => {

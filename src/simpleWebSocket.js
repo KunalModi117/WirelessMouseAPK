@@ -86,6 +86,7 @@ class SimpleWebSocketConnection extends EventEmitter {
     this.socket = socket;
     this.open = true;
     this.alive = true;
+    this.isAlive = true;
     this._buffer = Buffer.alloc(0);
 
     socket.on('data', (chunk) => this._handleData(chunk));
@@ -120,6 +121,7 @@ class SimpleWebSocketConnection extends EventEmitter {
           break;
         case 0xA:
           this.alive = true;
+          this.isAlive = true;
           this.emit('pong');
           break;
         default:

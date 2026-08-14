@@ -1,4 +1,4 @@
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 
 let nutJs = null;
 let robotjs = null;
@@ -13,51 +13,7 @@ function tryLoad(moduleName) {
 
 function createWindowsFallbackController() {
   const isWindows = process.platform === 'win32';
-
-  function runPowerShell(script) {
-    return new Promise((resolve, reject) => {
-      if (!isWindows) {
-        reject(new Error('No mouse automation backend available on this platform'));
-        return;
-      }
-      execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], (error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve();
-      });
-    });
-  }
-
-  function buildScript(body) {
-    return `
-Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-using System.Drawing;
-
-public static class InputSim {
-  [StructLayout(LayoutKind.Sequential)]
-  public struct POINT {
-    public int X;
-    public int Y;
-  }
-
-  [DllImport("user32.dll")]
-  public static extern bool GetCursorPos(out POINT lpPoint);
-
-  [DllImport("user32.dll")]
-  public static extern bool SetCursorPos(int X, int Y);
-
-  [DllImport("user32.dll")]
-  public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
-}
-"@
-Add-Type -AssemblyName System.Windows.Forms
-${body}
-`;
-  }
+  let child = null;
 
   function escapeSendKeys(text) {
     return String(text)
@@ -97,63 +53,162 @@ ${body}
     if (map[normalized]) {
       return map[normalized];
     }
-
     if (normalized.length === 1) {
       return escapeSendKeys(normalized);
     }
-
     return escapeSendKeys(normalized);
+  }
+
+  const psScript = `
+Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Drawing;
+
+public static class InputSim {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct POINT {
+    public int X;
+    public int Y;
+  }
+
+  [DllImport("user32.dll")]
+  public static extern bool GetCursorPos(out POINT lpPoint);
+
+  [DllImport("user32.dll")]
+  public static extern bool SetCursorPos(int X, int Y);
+
+  [DllImport("user32.dll")]
+  public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+}
+"@
+Add-Type -AssemblyName System.Windows.Forms
+
+while ($line = [Console]::ReadLine()) {
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    $parts = $line.Split(' ')
+    $cmd = $parts[0]
+    switch ($cmd) {
+        'M' {
+            $dx = [int]$parts[1]
+            $dy = [int]$parts[2]
+            $p = New-Object InputSim+POINT
+            [InputSim]::GetCursorPos([ref]$p) | Out-Null
+            [InputSim]::SetCursorPos($p.X + $dx, $p.Y + $dy) | Out-Null
+        }
+        'C' {
+            $btn = $parts[1]
+            $down = if ($btn -eq 'right') { 0x0008 } else { 0x0002 }
+            $up   = if ($btn -eq 'right') { 0x0010 } else { 0x0004 }
+            [InputSim]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
+            [InputSim]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
+        }
+        'S' {
+            $delta = [int]$parts[1]
+            $amount = [Math]::Max(1, [Math]::Abs($delta))
+            $wheel = if ($delta -ge 0) { $amount * 120 } else { -$amount * 120 }
+            [InputSim]::mouse_event(0x0800, 0, 0, [uint32]$wheel, [UIntPtr]::Zero)
+        }
+        'D' {
+            $active = $parts[1] -eq '1'
+            $btn = $parts[2]
+            $flag = if ($btn -eq 'right') { if ($active) { 0x0008 } else { 0x0010 } } else { if ($active) { 0x0002 } else { 0x0004 } }
+            [InputSim]::mouse_event($flag, 0, 0, 0, [UIntPtr]::Zero)
+        }
+        'K' {
+            $rawKey = $line.Substring(2)
+            [System.Windows.Forms.SendKeys]::SendWait($rawKey)
+        }
+    }
+}
+`;
+
+  function initWorker() {
+    if (!isWindows || child) return;
+    try {
+      child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psScript], {
+        stdio: ['pipe', 'ignore', 'ignore']
+      });
+      child.on('exit', () => {
+        child = null;
+      });
+      child.on('error', () => {
+        child = null;
+      });
+    } catch (_) {
+      child = null;
+    }
+  }
+
+  function sendCmd(cmd) {
+    if (!isWindows) return;
+    if (!child) {
+      initWorker();
+    }
+    if (child && child.stdin && child.stdin.writable) {
+      try {
+        child.stdin.write(cmd + '\n');
+      } catch (_) {}
+    }
+  }
+
+  if (isWindows) {
+    initWorker();
   }
 
   return {
     async moveRelative(dx, dy) {
-      const script = buildScript(`
-$p = New-Object InputSim+POINT
-[InputSim]::GetCursorPos([ref]$p) | Out-Null
-[InputSim]::SetCursorPos([Math]::Round($p.X + ${Math.round(dx)}), [Math]::Round($p.Y + ${Math.round(dy)})) | Out-Null
-`);
-      return runPowerShell(script);
+      sendCmd(`M ${Math.round(dx)} ${Math.round(dy)}`);
     },
     async scroll(delta) {
-      const amount = Math.max(1, Math.round(Math.abs(delta)));
-      const wheel = delta >= 0 ? amount * 120 : -amount * 120;
-      const script = buildScript(`
-[InputSim]::mouse_event(0x0800, 0, 0, [uint32](${wheel}), [UIntPtr]::Zero)
-`);
-      return runPowerShell(script);
+      sendCmd(`S ${Math.round(delta)}`);
     },
     async click(button) {
-      const normalized = String(button || 'left').toLowerCase();
-      const downFlag = normalized === 'right' ? '0x0008' : '0x0002';
-      const upFlag = normalized === 'right' ? '0x0010' : '0x0004';
-      const script = buildScript(`
-[InputSim]::mouse_event(${downFlag}, 0, 0, 0, [UIntPtr]::Zero)
-[InputSim]::mouse_event(${upFlag}, 0, 0, 0, [UIntPtr]::Zero)
-`);
-      return runPowerShell(script);
+      sendCmd(`C ${String(button || 'left').toLowerCase()}`);
     },
     async setDrag(active, button) {
-      const normalized = String(button || 'left').toLowerCase();
-      const flag = normalized === 'right' ? (active ? '0x0008' : '0x0010') : (active ? '0x0002' : '0x0004');
-      const script = buildScript(`
-[InputSim]::mouse_event(${flag}, 0, 0, 0, [UIntPtr]::Zero)
-`);
-      return runPowerShell(script);
+      sendCmd(`D ${active ? '1' : '0'} ${String(button || 'left').toLowerCase()}`);
     },
     async pressKey(key) {
-      const script = buildScript(`
-[System.Windows.Forms.SendKeys]::SendWait('${mapKeyToSendKeys(key).replace(/'/g, "''")}')
-`);
-      return runPowerShell(script);
+      sendCmd(`K ${mapKeyToSendKeys(key)}`);
     },
     async typeText(text) {
-      const script = buildScript(`
-[System.Windows.Forms.SendKeys]::SendWait('${escapeSendKeys(text).replace(/'/g, "''")}')
-`);
-      return runPowerShell(script);
+      sendCmd(`K ${escapeSendKeys(text)}`);
+    }
+  };
+}
+
+function createLinuxFallbackController() {
+  const isLinux = process.platform === 'linux';
+
+  return {
+    async moveRelative(dx, dy) {
+      if (!isLinux) return;
+      execFile('xdotool', ['mousemove_relative', '--', String(Math.round(dx)), String(Math.round(dy))], () => {});
     },
-    async _runPowerShell(script) {
-      return runPowerShell(script);
+    async scroll(delta) {
+      if (!isLinux) return;
+      const btn = delta >= 0 ? '5' : '4';
+      execFile('xdotool', ['click', btn], () => {});
+    },
+    async click(button) {
+      if (!isLinux) return;
+      const btn = String(button || 'left').toLowerCase() === 'right' ? '3' : '1';
+      execFile('xdotool', ['click', btn], () => {});
+    },
+    async setDrag(active, button) {
+      if (!isLinux) return;
+      const btn = String(button || 'left').toLowerCase() === 'right' ? '3' : '1';
+      const action = active ? 'mousedown' : 'mouseup';
+      execFile('xdotool', [action, btn], () => {});
+    },
+    async pressKey(key) {
+      if (!isLinux) return;
+      execFile('xdotool', ['key', String(key)], () => {});
+    },
+    async typeText(text) {
+      if (!isLinux) return;
+      execFile('xdotool', ['type', '--', String(text)], () => {});
     }
   };
 }
@@ -360,7 +415,11 @@ function createMouseController() {
     return createRobotController();
   }
 
-  return createWindowsFallbackController();
+  if (process.platform === 'win32') {
+    return createWindowsFallbackController();
+  }
+
+  return createLinuxFallbackController();
 }
 
 module.exports = {
