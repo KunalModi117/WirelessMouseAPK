@@ -327,7 +327,7 @@ export default function App() {
       sendWs({ type: 'handshake', client: 'expo-android' });
       pingTimerRef.current = setInterval(() => {
         const elapsed = Date.now() - lastPongAtRef.current;
-        if (elapsed > 9000) {
+        if (elapsed > 25000) {
           setLastError('Connection timed out. Reconnecting...');
           addDebugLog('warn', 'Heartbeat timeout', `last pong ${elapsed}ms ago`);
           setConnectionStatus('disconnected');
@@ -338,7 +338,7 @@ export default function App() {
           return;
         }
         sendWs({ type: 'ping', timestamp: Date.now() });
-      }, 3000);
+      }, 5000);
     };
 
     socket.onmessage = (event) => {

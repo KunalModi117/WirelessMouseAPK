@@ -130,7 +130,7 @@ function createHeartbeat(ws, socketId) {
     }
     ws.isAlive = false;
     ws.ping();
-  }, HEARTBEAT_INTERVAL_MS);
+  }, 15000);
 
   ws.on('close', () => clearInterval(interval));
   ws.on('error', () => clearInterval(interval));

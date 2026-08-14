@@ -111,6 +111,8 @@ class SimpleWebSocketConnection extends EventEmitter {
     for (const frame of parsed.frames) {
       switch (frame.opcode) {
         case 0x1:
+          this.alive = true;
+          this.isAlive = true;
           this.emit('message', frame.payload.toString('utf8'));
           break;
         case 0x8:

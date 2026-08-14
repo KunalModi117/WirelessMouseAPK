@@ -94,12 +94,12 @@ function createCommandRouter({ mouseController, state }) {
       case 'type':
         return handleType(payload, context);
       case 'ping':
-        if (context.socket && context.socket.readyState === 1) {
+        if (context.socket && context.socket.open) {
           context.socket.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
         }
         return { ok: true };
       case 'handshake':
-        if (context.socket && context.socket.readyState === 1) {
+        if (context.socket && context.socket.open) {
           context.socket.send(JSON.stringify({
             type: 'handshake-ack',
             serverTime: Date.now(),
