@@ -17,6 +17,10 @@
         "CHANGE_WIFI_MULTICAST_STATE"
       ]
     },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.wirelessmouse.remote"
+    },
     "extra": {
       "eas": {
         "projectId": "91fcd97c-f150-4d8d-9c3b-03c377914f26"

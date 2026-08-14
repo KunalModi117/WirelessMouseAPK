@@ -138,6 +138,8 @@ function createHeartbeat(ws, socketId) {
 
 async function main() {
   const mouseController = createMouseController();
+  console.log(`[mouse] Active controller backend: ${mouseController.backendName || 'Default'}`);
+
   const router = createCommandRouter({
     mouseController,
     state: serverState

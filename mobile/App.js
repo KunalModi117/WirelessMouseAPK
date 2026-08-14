@@ -381,11 +381,33 @@ export default function App() {
     };
   }
 
+  const pendingMoveRef = useRef({ x: 0, y: 0 });
+
+  function flushPendingMove() {
+    if (Math.abs(pendingMoveRef.current.x) > 0.001 || Math.abs(pendingMoveRef.current.y) > 0.001) {
+      const moveX = pendingMoveRef.current.x;
+      const moveY = pendingMoveRef.current.y;
+      pendingMoveRef.current = { x: 0, y: 0 };
+      const scaledDx = moveX * settings.mouseSensitivity;
+      const scaledDy = moveY * settings.mouseSensitivity;
+      sendWs({
+        type: 'move',
+        dx: scaledDx,
+        dy: scaledDy,
+        sensitivity: 1,
+        smooth: settings.smoothAcceleration
+      });
+    }
+  }
+
   function sendMove(dx, dy) {
     const server = activeServerRef.current || target;
     if (!server || !server.ip) {
       return;
     }
+
+    pendingMoveRef.current.x += dx;
+    pendingMoveRef.current.y += dy;
 
     const now = Date.now();
     if (now - lastMoveAtRef.current < 8) {
@@ -393,16 +415,7 @@ export default function App() {
     }
     lastMoveAtRef.current = now;
 
-    const scaledDx = dx * settings.mouseSensitivity;
-    const scaledDy = dy * settings.mouseSensitivity;
-    const payload = {
-      type: 'move',
-      dx: scaledDx,
-      dy: scaledDy,
-      sensitivity: 1,
-      smooth: settings.smoothAcceleration
-    };
-    sendWs(payload);
+    flushPendingMove();
   }
 
   function sendClick(button) {
@@ -467,6 +480,7 @@ export default function App() {
           movedRef.current = false;
           multiTouchRef.current = false;
           moveAccumulatorRef.current = { x: 0, y: 0 };
+          pendingMoveRef.current = { x: 0, y: 0 };
         },
         onPanResponderMove: (_, gestureState) => {
           const dx = gestureState.dx - moveAccumulatorRef.current.x;
@@ -492,6 +506,7 @@ export default function App() {
           }
         },
         onPanResponderRelease: (_, gestureState) => {
+          flushPendingMove();
           if (dragActiveRef.current) {
             dragActiveRef.current = false;
             sendDrag(false);
@@ -507,6 +522,7 @@ export default function App() {
           }
         },
         onPanResponderTerminate: () => {
+          flushPendingMove();
           if (dragActiveRef.current) {
             dragActiveRef.current = false;
             sendDrag(false);

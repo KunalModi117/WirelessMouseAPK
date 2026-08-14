@@ -12,11 +12,17 @@ function createCommandRouter({ mouseController, state }) {
     throw new Error('mouseController is required');
   }
 
+  let pendingDx = 0;
+  let pendingDy = 0;
+
   async function handleMove(payload) {
     const dx = clampNumber(payload.dx);
     const dy = clampNumber(payload.dy);
     const sensitivity = clampNumber(payload.sensitivity, 1);
     const smooth = Boolean(payload.smooth);
+
+    pendingDx += dx * sensitivity;
+    pendingDy += dy * sensitivity;
 
     const now = Date.now();
     const throttleMs = clampNumber(state.moveThrottleMs, 0);
@@ -25,28 +31,47 @@ function createCommandRouter({ mouseController, state }) {
     }
     state.lastMoveAt = now;
 
-    await mouseController.moveRelative(dx * sensitivity, dy * sensitivity, {
-      smooth
-    });
+    const moveX = pendingDx;
+    const moveY = pendingDy;
+    pendingDx = 0;
+    pendingDy = 0;
+
+    try {
+      await mouseController.moveRelative(moveX, moveY, { smooth });
+    } catch (err) {
+      console.warn('[router] handleMove error:', err.message);
+    }
     return { ok: true };
   }
 
   async function handleScroll(payload) {
     const delta = clampNumber(payload.delta);
     const sensitivity = clampNumber(payload.sensitivity, 1);
-    await mouseController.scroll(delta * sensitivity);
+    try {
+      await mouseController.scroll(delta * sensitivity);
+    } catch (err) {
+      console.warn('[router] handleScroll error:', err.message);
+    }
     return { ok: true };
   }
 
   async function handleClick(payload) {
-    await mouseController.click(String(payload.button || 'left'));
+    try {
+      await mouseController.click(String(payload.button || 'left'));
+    } catch (err) {
+      console.warn('[router] handleClick error:', err.message);
+    }
     return { ok: true };
   }
 
   async function handleDrag(payload) {
     const active = Boolean(payload.active);
     const button = String(payload.button || 'left');
-    await mouseController.setDrag(active, button);
+    try {
+      await mouseController.setDrag(active, button);
+    } catch (err) {
+      console.warn('[router] handleDrag error:', err.message);
+    }
     return { ok: true };
   }
 
@@ -55,7 +80,11 @@ function createCommandRouter({ mouseController, state }) {
     if (!key) {
       throw new Error('Missing key payload');
     }
-    await mouseController.pressKey(key);
+    try {
+      await mouseController.pressKey(key);
+    } catch (err) {
+      console.warn('[router] handleKey error:', err.message);
+    }
     return { ok: true };
   }
 
@@ -64,7 +93,11 @@ function createCommandRouter({ mouseController, state }) {
     if (!text) {
       return { ok: true };
     }
-    await mouseController.typeText(text);
+    try {
+      await mouseController.typeText(text);
+    } catch (err) {
+      console.warn('[router] handleType error:', err.message);
+    }
     return { ok: true };
   }
 

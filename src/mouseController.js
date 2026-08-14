@@ -11,8 +11,33 @@ function tryLoad(moduleName) {
   }
 }
 
+function createSubPixelAccumulator() {
+  let accX = 0;
+  let accY = 0;
+
+  return {
+    add(dx, dy) {
+      accX += (Number(dx) || 0);
+      accY += (Number(dy) || 0);
+
+      const stepX = Math.trunc(accX);
+      const stepY = Math.trunc(accY);
+
+      accX -= stepX;
+      accY -= stepY;
+
+      return { stepX, stepY };
+    },
+    reset() {
+      accX = 0;
+      accY = 0;
+    }
+  };
+}
+
 function createWindowsFallbackController() {
   const isWindows = process.platform === 'win32';
+  const accumulator = createSubPixelAccumulator();
   let child = null;
 
   function escapeSendKeys(text) {
@@ -132,10 +157,12 @@ while ($line = [Console]::ReadLine()) {
       child.on('exit', () => {
         child = null;
       });
-      child.on('error', () => {
+      child.on('error', (err) => {
+        console.warn('[mouse-win] PowerShell worker error:', err.message);
         child = null;
       });
-    } catch (_) {
+    } catch (err) {
+      console.warn('[mouse-win] Failed to spawn PowerShell worker:', err.message);
       child = null;
     }
   }
@@ -157,8 +184,12 @@ while ($line = [Console]::ReadLine()) {
   }
 
   return {
+    backendName: 'Windows PowerShell Fallback',
     async moveRelative(dx, dy) {
-      sendCmd(`M ${Math.round(dx)} ${Math.round(dy)}`);
+      const { stepX, stepY } = accumulator.add(dx, dy);
+      if (stepX !== 0 || stepY !== 0) {
+        sendCmd(`M ${stepX} ${stepY}`);
+      }
     },
     async scroll(delta) {
       sendCmd(`S ${Math.round(delta)}`);
@@ -180,35 +211,286 @@ while ($line = [Console]::ReadLine()) {
 
 function createLinuxFallbackController() {
   const isLinux = process.platform === 'linux';
+  const accumulator = createSubPixelAccumulator();
+  let pythonChild = null;
+
+  const pythonScript = `
+import sys, ctypes
+
+x11 = None
+xtst = None
+display = None
+
+try:
+    x11 = ctypes.cdll.LoadLibrary('libX11.so.6')
+    xtst = ctypes.cdll.LoadLibrary('libXtst.so.6')
+    display = x11.XOpenDisplay(None)
+except Exception as e:
+    display = None
+
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    parts = line.strip().split()
+    if not parts:
+        continue
+    cmd = parts[0]
+    if cmd == 'M' and display:
+        dx, dy = int(parts[1]), int(parts[2])
+        x11.XWarpPointer(display, 0, 0, 0, 0, 0, 0, dx, dy)
+        x11.XFlush(display)
+    elif cmd == 'C' and display:
+        btn_name = parts[1]
+        btn = 3 if btn_name == 'right' else 1
+        xtst.XTestFakeButtonEvent(display, btn, True, 0)
+        xtst.XTestFakeButtonEvent(display, btn, False, 0)
+        x11.XFlush(display)
+    elif cmd == 'S' and display:
+        delta = int(parts[1])
+        btn = 5 if delta >= 0 else 4
+        amount = max(1, abs(delta))
+        for _ in range(amount):
+            xtst.XTestFakeButtonEvent(display, btn, True, 0)
+            xtst.XTestFakeButtonEvent(display, btn, False, 0)
+        x11.XFlush(display)
+    elif cmd == 'D' and display:
+        active = parts[1] == '1'
+        btn_name = parts[2]
+        btn = 3 if btn_name == 'right' else 1
+        xtst.XTestFakeButtonEvent(display, btn, active, 0)
+        x11.XFlush(display)
+`;
+
+  function initPythonWorker() {
+    if (!isLinux || pythonChild) return;
+    try {
+      pythonChild = spawn('python3', ['-c', pythonScript], {
+        stdio: ['pipe', 'ignore', 'ignore']
+      });
+      pythonChild.on('exit', () => {
+        pythonChild = null;
+      });
+      pythonChild.on('error', () => {
+        pythonChild = null;
+      });
+    } catch (_) {
+      pythonChild = null;
+    }
+  }
+
+  function sendPythonCmd(cmd) {
+    if (!isLinux) return false;
+    if (!pythonChild) {
+      initPythonWorker();
+    }
+    if (pythonChild && pythonChild.stdin && pythonChild.stdin.writable) {
+      try {
+        pythonChild.stdin.write(cmd + '\n');
+        return true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  if (isLinux) {
+    initPythonWorker();
+  }
 
   return {
+    backendName: 'Linux Python X11 / xdotool Fallback',
     async moveRelative(dx, dy) {
       if (!isLinux) return;
-      execFile('xdotool', ['mousemove_relative', '--', String(Math.round(dx)), String(Math.round(dy))], () => {});
+      const { stepX, stepY } = accumulator.add(dx, dy);
+      if (stepX === 0 && stepY === 0) return;
+
+      if (!sendPythonCmd(`M ${stepX} ${stepY}`)) {
+        execFile('xdotool', ['mousemove_relative', '--', String(stepX), String(stepY)], (err) => {
+          if (err) {
+            console.warn('[mouse-linux] xdotool move failed:', err.message);
+          }
+        });
+      }
     },
     async scroll(delta) {
       if (!isLinux) return;
-      const btn = delta >= 0 ? '5' : '4';
-      execFile('xdotool', ['click', btn], () => {});
+      const rounded = Math.round(delta);
+      if (!sendPythonCmd(`S ${rounded}`)) {
+        const btn = rounded >= 0 ? '5' : '4';
+        execFile('xdotool', ['click', btn], (err) => {
+          if (err) {
+            console.warn('[mouse-linux] xdotool scroll failed:', err.message);
+          }
+        });
+      }
     },
     async click(button) {
       if (!isLinux) return;
-      const btn = String(button || 'left').toLowerCase() === 'right' ? '3' : '1';
-      execFile('xdotool', ['click', btn], () => {});
+      const btnName = String(button || 'left').toLowerCase();
+      if (!sendPythonCmd(`C ${btnName}`)) {
+        const btn = btnName === 'right' ? '3' : '1';
+        execFile('xdotool', ['click', btn], (err) => {
+          if (err) {
+            console.warn('[mouse-linux] xdotool click failed:', err.message);
+          }
+        });
+      }
     },
     async setDrag(active, button) {
       if (!isLinux) return;
-      const btn = String(button || 'left').toLowerCase() === 'right' ? '3' : '1';
-      const action = active ? 'mousedown' : 'mouseup';
-      execFile('xdotool', [action, btn], () => {});
+      const btnName = String(button || 'left').toLowerCase();
+      if (!sendPythonCmd(`D ${active ? '1' : '0'} ${btnName}`)) {
+        const btn = btnName === 'right' ? '3' : '1';
+        const action = active ? 'mousedown' : 'mouseup';
+        execFile('xdotool', [action, btn], (err) => {
+          if (err) {
+            console.warn('[mouse-linux] xdotool drag failed:', err.message);
+          }
+        });
+      }
     },
     async pressKey(key) {
       if (!isLinux) return;
-      execFile('xdotool', ['key', String(key)], () => {});
+      execFile('xdotool', ['key', String(key)], (err) => {
+        if (err) {
+          console.warn('[mouse-linux] xdotool key failed:', err.message);
+        }
+      });
     },
     async typeText(text) {
       if (!isLinux) return;
-      execFile('xdotool', ['type', '--', String(text)], () => {});
+      execFile('xdotool', ['type', '--', String(text)], (err) => {
+        if (err) {
+          console.warn('[mouse-linux] xdotool type failed:', err.message);
+        }
+      });
+    }
+  };
+}
+
+function createMacFallbackController() {
+  const isMac = process.platform === 'darwin';
+  const accumulator = createSubPixelAccumulator();
+  let pythonChild = null;
+
+  const pythonScript = `
+import sys, ctypes
+
+cg = None
+try:
+    cg = ctypes.cdll.LoadLibrary('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices')
+except Exception:
+    cg = None
+
+class CGPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    parts = line.strip().split()
+    if not parts:
+        continue
+    cmd = parts[0]
+    if cmd == 'M' and cg:
+        dx, dy = float(parts[1]), float(parts[2])
+        # Get current pos
+        evt = cg.CGEventCreate(None)
+        cur = cg.CGEventGetLocation(evt)
+        target = CGPoint(cur.x + dx, cur.y + dy)
+        moveEvt = cg.CGEventCreateMouseEvent(None, 5, target, 0)
+        cg.CGEventPost(0, moveEvt)
+    elif cmd == 'C' and cg:
+        btn_name = parts[1]
+        evt = cg.CGEventCreate(None)
+        cur = cg.CGEventGetLocation(evt)
+        downType = 3 if btn_name == 'right' else 1
+        upType = 4 if btn_name == 'right' else 2
+        btnCode = 1 if btn_name == 'right' else 0
+        dEvt = cg.CGEventCreateMouseEvent(None, downType, cur, btnCode)
+        uEvt = cg.CGEventCreateMouseEvent(None, upType, cur, btnCode)
+        cg.CGEventPost(0, dEvt)
+        cg.CGEventPost(0, uEvt)
+`;
+
+  function initPythonWorker() {
+    if (!isMac || pythonChild) return;
+    try {
+      pythonChild = spawn('python3', ['-c', pythonScript], {
+        stdio: ['pipe', 'ignore', 'ignore']
+      });
+      pythonChild.on('exit', () => {
+        pythonChild = null;
+      });
+      pythonChild.on('error', () => {
+        pythonChild = null;
+      });
+    } catch (_) {
+      pythonChild = null;
+    }
+  }
+
+  function sendPythonCmd(cmd) {
+    if (!isMac) return false;
+    if (!pythonChild) {
+      initPythonWorker();
+    }
+    if (pythonChild && pythonChild.stdin && pythonChild.stdin.writable) {
+      try {
+        pythonChild.stdin.write(cmd + '\n');
+        return true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  if (isMac) {
+    initPythonWorker();
+  }
+
+  return {
+    backendName: 'macOS CoreGraphics / osascript Fallback',
+    async moveRelative(dx, dy) {
+      if (!isMac) return;
+      const { stepX, stepY } = accumulator.add(dx, dy);
+      if (stepX === 0 && stepY === 0) return;
+
+      if (!sendPythonCmd(`M ${stepX} ${stepY}`)) {
+        execFile('cliclick', [`m:+${stepX},+${stepY}`], (err) => {
+          if (err) {
+            console.warn('[mouse-mac] cliclick move failed:', err.message);
+          }
+        });
+      }
+    },
+    async scroll(delta) {
+      if (!isMac) return;
+      const rounded = Math.round(delta);
+      const direction = rounded >= 0 ? 'down' : 'up';
+      execFile('cliclick', [`s:${direction}:${Math.abs(rounded)}`], () => {});
+    },
+    async click(button) {
+      if (!isMac) return;
+      const btnName = String(button || 'left').toLowerCase();
+      if (!sendPythonCmd(`C ${btnName}`)) {
+        const action = btnName === 'right' ? 'rc:.' : 'c:.';
+        execFile('cliclick', [action], () => {});
+      }
+    },
+    async setDrag(active, button) {
+      if (!isMac) return;
+      const btnName = String(button || 'left').toLowerCase();
+      const action = active ? (btnName === 'right' ? 'dd:.' : 'dd:.') : (btnName === 'right' ? 'du:.' : 'du:.');
+      execFile('cliclick', [action], () => {});
+    },
+    async pressKey(key) {
+      if (!isMac) return;
+      execFile('osascript', ['-e', `tell application "System Events" to key code ${key}`], () => {});
+    },
+    async typeText(text) {
+      if (!isMac) return;
+      execFile('osascript', ['-e', `tell application "System Events" to keystroke "${String(text).replace(/"/g, '\\"')}"`], () => {});
     }
   };
 }
@@ -295,18 +577,23 @@ function resolveRobotKey(key) {
 
 function createNutController() {
   const { mouse, keyboard, Button, Key, Point } = nutJs;
+  const accumulator = createSubPixelAccumulator();
   let dragActive = false;
 
   return {
+    backendName: 'NutJS (@nut-tree/nut-js)',
     async moveRelative(dx, dy, options = {}) {
+      const { stepX, stepY } = accumulator.add(dx, dy);
+      if (stepX === 0 && stepY === 0) return;
+
       const current = await mouse.getPosition();
-      const target = new Point(Math.round(current.x + dx), Math.round(current.y + dy));
+      const target = new Point(current.x + stepX, current.y + stepY);
       if (options.smooth) {
-        const steps = Math.max(1, Math.min(8, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / 12)));
+        const steps = Math.max(1, Math.min(8, Math.ceil(Math.max(Math.abs(stepX), Math.abs(stepY)) / 12)));
         for (let i = 1; i <= steps; i += 1) {
           const stepPoint = new Point(
-            Math.round(current.x + (dx * i) / steps),
-            Math.round(current.y + (dy * i) / steps)
+            Math.round(current.x + (stepX * i) / steps),
+            Math.round(current.y + (stepY * i) / steps)
           );
           await mouse.setPosition(stepPoint);
         }
@@ -356,22 +643,27 @@ function createNutController() {
 
 function createRobotController() {
   const robot = robotjs;
+  const accumulator = createSubPixelAccumulator();
   let dragActive = false;
 
   return {
+    backendName: 'RobotJS (robotjs)',
     async moveRelative(dx, dy, options = {}) {
+      const { stepX, stepY } = accumulator.add(dx, dy);
+      if (stepX === 0 && stepY === 0) return;
+
       if (options.smooth) {
-        const steps = Math.max(1, Math.min(8, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / 12)));
+        const steps = Math.max(1, Math.min(8, Math.ceil(Math.max(Math.abs(stepX), Math.abs(stepY)) / 12)));
         const start = robot.getMousePos();
         for (let i = 1; i <= steps; i += 1) {
-          const nextX = Math.round(start.x + (dx * i) / steps);
-          const nextY = Math.round(start.y + (dy * i) / steps);
+          const nextX = Math.round(start.x + (stepX * i) / steps);
+          const nextY = Math.round(start.y + (stepY * i) / steps);
           robot.moveMouse(nextX, nextY);
         }
         return;
       }
       const pos = robot.getMousePos();
-      robot.moveMouse(Math.round(pos.x + dx), Math.round(pos.y + dy));
+      robot.moveMouse(pos.x + stepX, pos.y + stepY);
     },
     async scroll(delta) {
       robot.scrollMouse(0, Math.round(delta));
@@ -417,6 +709,10 @@ function createMouseController() {
 
   if (process.platform === 'win32') {
     return createWindowsFallbackController();
+  }
+
+  if (process.platform === 'darwin') {
+    return createMacFallbackController();
   }
 
   return createLinuxFallbackController();
