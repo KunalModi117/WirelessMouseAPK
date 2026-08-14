@@ -33,6 +33,7 @@ const DEFAULT_TARGET = {
 };
 
 const STORAGE_KEY = '@wireless_mouse_settings_v1';
+const DUMMY_BUFFER = '  ';
 
 function toJson(payload) {
   return JSON.stringify(payload);
@@ -80,7 +81,7 @@ export default function App() {
   const [discovered, setDiscovered] = useState([]);
   const [manualMode, setManualMode] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
-  const [inputValue, setInputValue] = useState('');
+  const [inputValue, setInputValue] = useState(DUMMY_BUFFER);
   const [lastError, setLastError] = useState('');
   const [debugOpen, setDebugOpen] = useState(false);
   const [debugLogs, setDebugLogs] = useState([]);
@@ -450,25 +451,48 @@ export default function App() {
     if (!key) {
       return;
     }
-    if (key === 'Backspace' || key === 'Enter' || key === ' ') {
-      sendKey(key === ' ' ? 'Space' : key);
-      return;
+    const specialKeyMap = {
+      ArrowUp: 'Up',
+      ArrowDown: 'Down',
+      ArrowLeft: 'Left',
+      ArrowRight: 'Right',
+      Up: 'Up',
+      Down: 'Down',
+      Left: 'Left',
+      Right: 'Right',
+      Tab: 'Tab',
+      Escape: 'Escape'
+    };
+    if (specialKeyMap[key]) {
+      sendKey(specialKeyMap[key]);
     }
-    if (key.length === 1) {
-      sendKey(key);
-      return;
-    }
-    sendKey(key);
   }
 
   function handleTextChange(text) {
-    if (text.length > inputValue.length) {
-      const nextChar = text.slice(-1);
-      if (nextChar && nextChar.length === 1) {
-        sendKey(nextChar);
+    if (text === DUMMY_BUFFER) {
+      return;
+    }
+
+    if (text.length > DUMMY_BUFFER.length) {
+      const added = text.slice(DUMMY_BUFFER.length);
+      for (let i = 0; i < added.length; i += 1) {
+        const char = added[i];
+        if (char === '\n' || char === '\r') {
+          sendKey('Enter');
+        } else if (char === ' ') {
+          sendKey('Space');
+        } else {
+          sendKey(char);
+        }
+      }
+    } else if (text.length < DUMMY_BUFFER.length) {
+      const deleteCount = DUMMY_BUFFER.length - text.length;
+      for (let i = 0; i < deleteCount; i += 1) {
+        sendKey('Backspace');
       }
     }
-    setInputValue(text);
+
+    setInputValue(DUMMY_BUFFER);
   }
 
   const trackpadResponder = useMemo(

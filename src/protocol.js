@@ -3,8 +3,22 @@ function clampNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+const SPECIAL_KEYS = new Set([
+  'up', 'down', 'left', 'right',
+  'backspace', 'enter', 'return', 'escape', 'esc',
+  'space', 'tab', 'delete', 'del', 'home', 'end',
+  'pageup', 'pagedown', 'shift', 'control', 'ctrl',
+  'alt', 'meta', 'command', 'cmd'
+]);
+
 function normalizeKey(key) {
-  return String(key || '').trim().toLowerCase();
+  const str = String(key || '').trim();
+  if (!str) return '';
+  const lower = str.toLowerCase();
+  if (SPECIAL_KEYS.has(lower)) {
+    return lower;
+  }
+  return str;
 }
 
 function createCommandRouter({ mouseController, state }) {

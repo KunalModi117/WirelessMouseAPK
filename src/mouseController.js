@@ -54,7 +54,8 @@ function createWindowsFallbackController() {
   }
 
   function mapKeyToSendKeys(key) {
-    const normalized = String(key || '').trim().toLowerCase();
+    const str = String(key || '').trim();
+    const normalized = str.toLowerCase();
     const map = {
       backspace: '{BACKSPACE}',
       enter: '{ENTER}',
@@ -78,10 +79,7 @@ function createWindowsFallbackController() {
     if (map[normalized]) {
       return map[normalized];
     }
-    if (normalized.length === 1) {
-      return escapeSendKeys(normalized);
-    }
-    return escapeSendKeys(normalized);
+    return escapeSendKeys(str);
   }
 
   const psScript = `
@@ -225,29 +223,82 @@ try:
     x11 = ctypes.cdll.LoadLibrary('libX11.so.6')
     xtst = ctypes.cdll.LoadLibrary('libXtst.so.6')
     display = x11.XOpenDisplay(None)
-except Exception as e:
+except Exception:
     display = None
+
+key_mapping = {
+    'up': 'Up',
+    'down': 'Down',
+    'left': 'Left',
+    'right': 'Right',
+    'backspace': 'BackSpace',
+    'enter': 'Return',
+    'return': 'Return',
+    'space': 'space',
+    'tab': 'Tab',
+    'escape': 'Escape',
+    'esc': 'Escape',
+    'delete': 'Delete',
+    'del': 'Delete',
+    'home': 'Home',
+    'end': 'End',
+    'pageup': 'Page_Up',
+    'pagedown': 'Page_Down'
+}
+
+def send_key_event(key_str):
+    if not display or not key_str:
+        return False
+    target = key_mapping.get(key_str.lower(), key_str)
+    needs_shift = False
+    if len(target) == 1 and target.isupper():
+        needs_shift = True
+
+    keysym = x11.XStringToKeysym(target.encode('utf-8'))
+    if not keysym and len(target) == 1:
+        keysym = ord(target)
+    if not keysym:
+        return False
+
+    keycode = x11.XKeysymToKeycode(display, keysym)
+    if not keycode:
+        return False
+
+    shift_keycode = x11.XKeysymToKeycode(display, x11.XStringToKeysym(b'Shift_L')) if needs_shift else 0
+    if needs_shift and shift_keycode:
+        xtst.XTestFakeKeyEvent(display, shift_keycode, True, 0)
+    xtst.XTestFakeKeyEvent(display, keycode, True, 0)
+    xtst.XTestFakeKeyEvent(display, keycode, False, 0)
+    if needs_shift and shift_keycode:
+        xtst.XTestFakeKeyEvent(display, shift_keycode, False, 0)
+    x11.XFlush(display)
+    return True
 
 while True:
     line = sys.stdin.readline()
     if not line:
         break
-    parts = line.strip().split()
-    if not parts:
+    line_clean = line.rstrip('\\r\\n')
+    if not line_clean:
         continue
+    parts = line_clean.split(' ', 1)
     cmd = parts[0]
+    arg = parts[1] if len(parts) > 1 else ''
+
     if cmd == 'M' and display:
-        dx, dy = int(parts[1]), int(parts[2])
-        x11.XWarpPointer(display, 0, 0, 0, 0, 0, 0, dx, dy)
-        x11.XFlush(display)
+        m_parts = arg.split()
+        if len(m_parts) >= 2:
+            dx, dy = int(m_parts[0]), int(m_parts[1])
+            x11.XWarpPointer(display, 0, 0, 0, 0, 0, 0, dx, dy)
+            x11.XFlush(display)
     elif cmd == 'C' and display:
-        btn_name = parts[1]
+        btn_name = arg.strip()
         btn = 3 if btn_name == 'right' else 1
         xtst.XTestFakeButtonEvent(display, btn, True, 0)
         xtst.XTestFakeButtonEvent(display, btn, False, 0)
         x11.XFlush(display)
     elif cmd == 'S' and display:
-        delta = int(parts[1])
+        delta = int(arg.strip())
         btn = 5 if delta >= 0 else 4
         amount = max(1, abs(delta))
         for _ in range(amount):
@@ -255,11 +306,18 @@ while True:
             xtst.XTestFakeButtonEvent(display, btn, False, 0)
         x11.XFlush(display)
     elif cmd == 'D' and display:
-        active = parts[1] == '1'
-        btn_name = parts[2]
-        btn = 3 if btn_name == 'right' else 1
-        xtst.XTestFakeButtonEvent(display, btn, active, 0)
-        x11.XFlush(display)
+        d_parts = arg.split()
+        if len(d_parts) >= 2:
+            active = d_parts[0] == '1'
+            btn_name = d_parts[1]
+            btn = 3 if btn_name == 'right' else 1
+            xtst.XTestFakeButtonEvent(display, btn, active, 0)
+            x11.XFlush(display)
+    elif cmd == 'K' and display:
+        send_key_event(arg.strip())
+    elif cmd == 'T' and display:
+        for char in arg:
+            send_key_event(char)
 `;
 
   function initPythonWorker() {
@@ -351,19 +409,23 @@ while True:
     },
     async pressKey(key) {
       if (!isLinux) return;
-      execFile('xdotool', ['key', String(key)], (err) => {
-        if (err) {
-          console.warn('[mouse-linux] xdotool key failed:', err.message);
-        }
-      });
+      if (!sendPythonCmd(`K ${key}`)) {
+        execFile('xdotool', ['key', String(key)], (err) => {
+          if (err) {
+            console.warn('[mouse-linux] xdotool key failed:', err.message);
+          }
+        });
+      }
     },
     async typeText(text) {
       if (!isLinux) return;
-      execFile('xdotool', ['type', '--', String(text)], (err) => {
-        if (err) {
-          console.warn('[mouse-linux] xdotool type failed:', err.message);
-        }
-      });
+      if (!sendPythonCmd(`T ${text}`)) {
+        execFile('xdotool', ['type', '--', String(text)], (err) => {
+          if (err) {
+            console.warn('[mouse-linux] xdotool type failed:', err.message);
+          }
+        });
+      }
     }
   };
 }
@@ -486,17 +548,45 @@ while True:
     },
     async pressKey(key) {
       if (!isMac) return;
-      execFile('osascript', ['-e', `tell application "System Events" to key code ${key}`], () => {});
+      const str = String(key || '').trim();
+      const normalized = str.toLowerCase();
+      const macKeyCodes = {
+        up: 126,
+        down: 125,
+        left: 123,
+        right: 124,
+        return: 36,
+        enter: 36,
+        backspace: 51,
+        space: 49,
+        tab: 48,
+        escape: 53,
+        esc: 53,
+        delete: 117,
+        home: 115,
+        end: 119,
+        pageup: 116,
+        pagedown: 121
+      };
+
+      if (macKeyCodes[normalized]) {
+        execFile('osascript', ['-e', `tell application "System Events" to key code ${macKeyCodes[normalized]}`], () => {});
+      } else if (str.length > 0) {
+        const escaped = str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        execFile('osascript', ['-e', `tell application "System Events" to keystroke "${escaped}"`], () => {});
+      }
     },
     async typeText(text) {
       if (!isMac) return;
-      execFile('osascript', ['-e', `tell application "System Events" to keystroke "${String(text).replace(/"/g, '\\"')}"`], () => {});
+      const escaped = String(text || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      execFile('osascript', ['-e', `tell application "System Events" to keystroke "${escaped}"`], () => {});
     }
   };
 }
 
 function resolveNutKey(key) {
-  const normalized = String(key || '').trim().toLowerCase();
+  const str = String(key || '').trim();
+  const normalized = str.toLowerCase();
   const map = {
     backspace: 'Backspace',
     enter: 'Enter',
@@ -528,8 +618,8 @@ function resolveNutKey(key) {
     return map[normalized];
   }
 
-  if (normalized.length === 1) {
-    return normalized.toUpperCase();
+  if (str.length === 1) {
+    return str;
   }
 
   return normalized
@@ -540,7 +630,8 @@ function resolveNutKey(key) {
 }
 
 function resolveRobotKey(key) {
-  const normalized = String(key || '').trim().toLowerCase();
+  const str = String(key || '').trim();
+  const normalized = str.toLowerCase();
   const map = {
     backspace: 'backspace',
     enter: 'enter',
@@ -569,10 +660,14 @@ function resolveRobotKey(key) {
   };
 
   if (map[normalized]) {
-    return map[normalized];
+    return { key: map[normalized], modifier: [] };
   }
 
-  return normalized;
+  if (str.length === 1 && str >= 'A' && str <= 'Z') {
+    return { key: str.toLowerCase(), modifier: ['shift'] };
+  }
+
+  return { key: str, modifier: [] };
 }
 
 function createNutController() {
@@ -687,8 +782,12 @@ function createRobotController() {
       }
     },
     async pressKey(key) {
-      const normalized = resolveRobotKey(key);
-      robot.keyTap(normalized);
+      const resolved = resolveRobotKey(key);
+      if (typeof resolved === 'object') {
+        robot.keyTap(resolved.key, resolved.modifier);
+      } else {
+        robot.keyTap(resolved);
+      }
     },
     async typeText(text) {
       robot.typeString(String(text));
