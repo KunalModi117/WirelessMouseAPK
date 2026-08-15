@@ -43,6 +43,24 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function getTouchCentroid(evt) {
+  const touches = evt?.nativeEvent?.touches;
+  if (!touches || touches.length === 0) {
+    return null;
+  }
+  let sumX = 0;
+  let sumY = 0;
+  for (let i = 0; i < touches.length; i += 1) {
+    sumX += touches[i].pageX;
+    sumY += touches[i].pageY;
+  }
+  return {
+    x: sumX / touches.length,
+    y: sumY / touches.length,
+    count: touches.length
+  };
+}
+
 async function safeParseSettings() {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
@@ -518,6 +536,9 @@ export default function App() {
     setInputValue(DUMMY_BUFFER);
   }
 
+  const lastTouchPosRef = useRef(null);
+  const lastScrollYRef = useRef(null);
+
   const trackpadResponder = useMemo(
     () =>
       PanResponder.create({
@@ -526,23 +547,33 @@ export default function App() {
         onPanResponderGrant: (evt) => {
           movedRef.current = false;
           multiTouchRef.current = false;
-          const touches = evt.nativeEvent.touches ? evt.nativeEvent.touches.length : 1;
-          if (touches >= 2) {
+          const centroid = getTouchCentroid(evt);
+          lastTouchPosRef.current = centroid;
+          if (centroid && centroid.count >= 2) {
             multiTouchRef.current = true;
           }
-          moveAccumulatorRef.current = { x: 0, y: 0 };
-          scrollAccumulatorRef.current = 0;
           pendingMoveRef.current = { x: 0, y: 0 };
         },
         onPanResponderMove: (evt, gestureState) => {
-          const touches = evt.nativeEvent.touches ? evt.nativeEvent.touches.length : gestureState.numberActiveTouches;
-          if (touches >= 2) {
+          const centroid = getTouchCentroid(evt);
+          if (!centroid) {
+            return;
+          }
+
+          if (centroid.count >= 2) {
             multiTouchRef.current = true;
           }
 
+          if (!lastTouchPosRef.current || lastTouchPosRef.current.count !== centroid.count) {
+            lastTouchPosRef.current = centroid;
+            return;
+          }
+
+          const dx = centroid.x - lastTouchPosRef.current.x;
+          const dy = centroid.y - lastTouchPosRef.current.y;
+          lastTouchPosRef.current = centroid;
+
           if (multiTouchRef.current) {
-            const dy = gestureState.dy - scrollAccumulatorRef.current;
-            scrollAccumulatorRef.current = gestureState.dy;
             if (Math.abs(gestureState.dx) > 6 || Math.abs(gestureState.dy) > 6) {
               movedRef.current = true;
             }
@@ -551,10 +582,6 @@ export default function App() {
             }
             return;
           }
-
-          const dx = gestureState.dx - moveAccumulatorRef.current.x;
-          const dy = gestureState.dy - moveAccumulatorRef.current.y;
-          moveAccumulatorRef.current = { x: gestureState.dx, y: gestureState.dy };
 
           if (Math.abs(gestureState.dx) > 4 || Math.abs(gestureState.dy) > 4) {
             movedRef.current = true;
@@ -566,6 +593,7 @@ export default function App() {
         },
         onPanResponderRelease: () => {
           flushPendingMove();
+          lastTouchPosRef.current = null;
           if (!movedRef.current) {
             if (multiTouchRef.current) {
               sendClick('right');
@@ -576,6 +604,7 @@ export default function App() {
         },
         onPanResponderTerminate: () => {
           flushPendingMove();
+          lastTouchPosRef.current = null;
         }
       }),
     [settings.mouseSensitivity, settings.scrollSensitivity, settings.smoothAcceleration]
@@ -586,21 +615,28 @@ export default function App() {
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
-        onPanResponderGrant: () => {
-          scrollAccumulatorRef.current = 0;
+        onPanResponderGrant: (evt) => {
+          const touches = evt?.nativeEvent?.touches;
+          lastScrollYRef.current = touches && touches[0] ? touches[0].pageY : null;
         },
-        onPanResponderMove: (_, gestureState) => {
-          const delta = gestureState.dy - scrollAccumulatorRef.current;
-          scrollAccumulatorRef.current = gestureState.dy;
+        onPanResponderMove: (evt) => {
+          const touches = evt?.nativeEvent?.touches;
+          const currentY = touches && touches[0] ? touches[0].pageY : null;
+          if (currentY === null || lastScrollYRef.current === null) {
+            lastScrollYRef.current = currentY;
+            return;
+          }
+          const delta = currentY - lastScrollYRef.current;
+          lastScrollYRef.current = currentY;
           if (Math.abs(delta) > 0.1) {
             sendScroll(-delta);
           }
         },
         onPanResponderRelease: () => {
-          scrollAccumulatorRef.current = 0;
+          lastScrollYRef.current = null;
         },
         onPanResponderTerminate: () => {
-          scrollAccumulatorRef.current = 0;
+          lastScrollYRef.current = null;
         }
       }),
     [settings.scrollSensitivity]
@@ -833,28 +869,67 @@ export default function App() {
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Settings</Text>
-            <Text style={styles.sliderLabel}>Mouse sensitivity: {draftSettings.mouseSensitivity.toFixed(1)}x</Text>
-            <Slider
-              minimumValue={0.5}
-              maximumValue={3}
-              step={0.1}
-              value={draftSettings.mouseSensitivity}
-              onValueChange={(value) => setDraftSettings((current) => ({ ...current, mouseSensitivity: value }))}
-              minimumTrackTintColor="#38bdf8"
-              maximumTrackTintColor="#334155"
-            />
-            <Text style={styles.sliderLabel}>Scroll sensitivity: {draftSettings.scrollSensitivity.toFixed(1)}x</Text>
-            <Slider
-              minimumValue={0.5}
-              maximumValue={3}
-              step={0.1}
-              value={draftSettings.scrollSensitivity}
-              onValueChange={(value) => setDraftSettings((current) => ({ ...current, scrollSensitivity: value }))}
-              minimumTrackTintColor="#38bdf8"
-              maximumTrackTintColor="#334155"
-            />
+
+            <View style={styles.stepperContainer}>
+              <Text style={styles.stepperLabel}>Mouse Sensitivity</Text>
+              <View style={styles.stepperRow}>
+                <Pressable
+                  onPress={() =>
+                    setDraftSettings((curr) => ({
+                      ...curr,
+                      mouseSensitivity: Math.max(0.5, Math.round((curr.mouseSensitivity - 0.1) * 10) / 10)
+                    }))
+                  }
+                  style={({ pressed }) => [styles.stepperBtn, pressed && styles.buttonPressed]}
+                >
+                  <Text style={styles.stepperBtnText}>-</Text>
+                </Pressable>
+                <Text style={styles.stepperValueText}>{draftSettings.mouseSensitivity.toFixed(1)}x</Text>
+                <Pressable
+                  onPress={() =>
+                    setDraftSettings((curr) => ({
+                      ...curr,
+                      mouseSensitivity: Math.min(3.0, Math.round((curr.mouseSensitivity + 0.1) * 10) / 10)
+                    }))
+                  }
+                  style={({ pressed }) => [styles.stepperBtn, pressed && styles.buttonPressed]}
+                >
+                  <Text style={styles.stepperBtnText}>+</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            <View style={styles.stepperContainer}>
+              <Text style={styles.stepperLabel}>Scroll Sensitivity</Text>
+              <View style={styles.stepperRow}>
+                <Pressable
+                  onPress={() =>
+                    setDraftSettings((curr) => ({
+                      ...curr,
+                      scrollSensitivity: Math.max(0.5, Math.round((curr.scrollSensitivity - 0.1) * 10) / 10)
+                    }))
+                  }
+                  style={({ pressed }) => [styles.stepperBtn, pressed && styles.buttonPressed]}
+                >
+                  <Text style={styles.stepperBtnText}>-</Text>
+                </Pressable>
+                <Text style={styles.stepperValueText}>{draftSettings.scrollSensitivity.toFixed(1)}x</Text>
+                <Pressable
+                  onPress={() =>
+                    setDraftSettings((curr) => ({
+                      ...curr,
+                      scrollSensitivity: Math.min(3.0, Math.round((curr.scrollSensitivity + 0.1) * 10) / 10)
+                    }))
+                  }
+                  style={({ pressed }) => [styles.stepperBtn, pressed && styles.buttonPressed]}
+                >
+                  <Text style={styles.stepperBtnText}>+</Text>
+                </Pressable>
+              </View>
+            </View>
+
             <View style={styles.toggleRow}>
-              <Text style={styles.sliderLabel}>Smooth acceleration</Text>
+              <Text style={styles.stepperLabel}>Smooth acceleration</Text>
               <Switch
                 value={draftSettings.smoothAcceleration}
                 onValueChange={(value) => setDraftSettings((current) => ({ ...current, smoothAcceleration: value }))}
@@ -1230,6 +1305,43 @@ const styles = StyleSheet.create({
   sliderLabel: {
     color: '#cbd5e1',
     fontWeight: '600'
+  },
+  stepperContainer: {
+    gap: 6
+  },
+  stepperLabel: {
+    color: '#cbd5e1',
+    fontWeight: '600'
+  },
+  stepperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#111827',
+    borderRadius: 16,
+    padding: 6,
+    borderWidth: 1,
+    borderColor: '#334155'
+  },
+  stepperBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#1e293b',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#334155'
+  },
+  stepperBtnText: {
+    color: '#38bdf8',
+    fontSize: 22,
+    fontWeight: '800'
+  },
+  stepperValueText: {
+    color: '#f8fafc',
+    fontSize: 18,
+    fontWeight: '800'
   },
   toggleRow: {
     flexDirection: 'row',
