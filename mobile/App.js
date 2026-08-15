@@ -383,8 +383,13 @@ export default function App() {
   }
 
   const pendingMoveRef = useRef({ x: 0, y: 0 });
+  const flushTimerRef = useRef(null);
 
   function flushPendingMove() {
+    if (flushTimerRef.current) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
     if (Math.abs(pendingMoveRef.current.x) > 0.001 || Math.abs(pendingMoveRef.current.y) > 0.001) {
       const moveX = pendingMoveRef.current.x;
       const moveY = pendingMoveRef.current.y;
@@ -401,6 +406,15 @@ export default function App() {
     }
   }
 
+  function scheduleFlush() {
+    if (!flushTimerRef.current) {
+      flushTimerRef.current = setTimeout(() => {
+        flushTimerRef.current = null;
+        flushPendingMove();
+      }, 8);
+    }
+  }
+
   function sendMove(dx, dy) {
     const server = activeServerRef.current || target;
     if (!server || !server.ip) {
@@ -412,10 +426,10 @@ export default function App() {
 
     const now = Date.now();
     if (now - lastMoveAtRef.current < 8) {
+      scheduleFlush();
       return;
     }
     lastMoveAtRef.current = now;
-
     flushPendingMove();
   }
 
@@ -441,6 +455,11 @@ export default function App() {
     });
   }
 
+  function sendVolume(action) {
+    addDebugLog('info', 'Volume', action);
+    sendWs({ type: 'volume', action });
+  }
+
   function sendKey(key) {
     addDebugLog('info', 'Key', key);
     sendWs({ type: 'key', key });
@@ -449,6 +468,10 @@ export default function App() {
   function handleHiddenKeyPress(event) {
     const key = event.nativeEvent.key;
     if (!key) {
+      return;
+    }
+    if (key === 'Enter' || key === 'return') {
+      sendKey('Enter');
       return;
     }
     const specialKeyMap = {
@@ -500,44 +523,50 @@ export default function App() {
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
-        onPanResponderGrant: () => {
+        onPanResponderGrant: (evt) => {
           movedRef.current = false;
           multiTouchRef.current = false;
+          const touches = evt.nativeEvent.touches ? evt.nativeEvent.touches.length : 1;
+          if (touches >= 2) {
+            multiTouchRef.current = true;
+          }
           moveAccumulatorRef.current = { x: 0, y: 0 };
+          scrollAccumulatorRef.current = 0;
           pendingMoveRef.current = { x: 0, y: 0 };
         },
-        onPanResponderMove: (_, gestureState) => {
+        onPanResponderMove: (evt, gestureState) => {
+          const touches = evt.nativeEvent.touches ? evt.nativeEvent.touches.length : gestureState.numberActiveTouches;
+          if (touches >= 2) {
+            multiTouchRef.current = true;
+          }
+
+          if (multiTouchRef.current) {
+            const dy = gestureState.dy - scrollAccumulatorRef.current;
+            scrollAccumulatorRef.current = gestureState.dy;
+            if (Math.abs(gestureState.dx) > 6 || Math.abs(gestureState.dy) > 6) {
+              movedRef.current = true;
+            }
+            if (Math.abs(dy) > 0.1) {
+              sendScroll(-dy);
+            }
+            return;
+          }
+
           const dx = gestureState.dx - moveAccumulatorRef.current.x;
           const dy = gestureState.dy - moveAccumulatorRef.current.y;
           moveAccumulatorRef.current = { x: gestureState.dx, y: gestureState.dy };
-          if (gestureState.numberActiveTouches >= 2) {
-            multiTouchRef.current = true;
-            if (!dragActiveRef.current) {
-              dragActiveRef.current = true;
-              sendDrag(true);
-            }
-            if (Math.abs(dx) + Math.abs(dy) > 0.1) {
-              movedRef.current = true;
-              sendMove(dx, dy);
-            }
-            return;
+
+          if (Math.abs(gestureState.dx) > 4 || Math.abs(gestureState.dy) > 4) {
+            movedRef.current = true;
           }
 
           if (Math.abs(dx) + Math.abs(dy) > 0.1) {
-            movedRef.current = true;
-            addDebugLog('info', 'Move', `${Math.round(dx)},${Math.round(dy)}`);
             sendMove(dx, dy);
           }
         },
-        onPanResponderRelease: (_, gestureState) => {
+        onPanResponderRelease: () => {
           flushPendingMove();
-          if (dragActiveRef.current) {
-            dragActiveRef.current = false;
-            sendDrag(false);
-            return;
-          }
-
-          if (!movedRef.current && gestureState.numberActiveTouches <= 1) {
+          if (!movedRef.current) {
             if (multiTouchRef.current) {
               sendClick('right');
             } else {
@@ -547,10 +576,6 @@ export default function App() {
         },
         onPanResponderTerminate: () => {
           flushPendingMove();
-          if (dragActiveRef.current) {
-            dragActiveRef.current = false;
-            sendDrag(false);
-          }
         }
       }),
     [settings.mouseSensitivity, settings.scrollSensitivity, settings.smoothAcceleration]
@@ -671,6 +696,21 @@ export default function App() {
             </View>
           </View>
 
+          <View style={styles.volumeBar}>
+            <Pressable
+              onPress={() => sendVolume('down')}
+              style={({ pressed }) => [styles.volumeButton, pressed && styles.buttonPressed]}
+            >
+              <Text style={styles.volumeButtonText}>🔉 Vol -</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => sendVolume('up')}
+              style={({ pressed }) => [styles.volumeButton, pressed && styles.buttonPressed]}
+            >
+              <Text style={styles.volumeButtonText}>🔊 Vol +</Text>
+            </Pressable>
+          </View>
+
           {!!lastError && <Text style={styles.errorBanner}>{lastError}</Text>}
 
           <View style={styles.discoveryCard}>
@@ -701,7 +741,7 @@ export default function App() {
           <View style={styles.trackpadRow}>
             <View style={styles.trackpadShell} {...trackpadResponder.panHandlers}>
               <Text style={styles.trackpadHint}>Trackpad: drag to move, tap to click</Text>
-              <Text style={styles.trackpadSubhint}>Two fingers: right click or drag</Text>
+              <Text style={styles.trackpadSubhint}>Two fingers: tap for right click, drag to scroll</Text>
               <View style={styles.trackpadGlow} />
             </View>
 
@@ -740,6 +780,8 @@ export default function App() {
               value={inputValue}
               onChangeText={handleTextChange}
               onKeyPress={handleHiddenKeyPress}
+              onSubmitEditing={() => sendKey('Enter')}
+              returnKeyType="send"
               style={styles.hiddenInput}
               autoCapitalize="none"
               autoCorrect={false}
@@ -884,6 +926,25 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 8
+  },
+  volumeBar: {
+    flexDirection: 'row',
+    gap: 12
+  },
+  volumeButton: {
+    flex: 1,
+    backgroundColor: '#1e293b',
+    paddingVertical: 10,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#334155'
+  },
+  volumeButtonText: {
+    color: '#38bdf8',
+    fontSize: 15,
+    fontWeight: '700'
   },
   headerActions: {
     flexDirection: 'row',

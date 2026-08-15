@@ -38,13 +38,6 @@ function createCommandRouter({ mouseController, state }) {
     pendingDx += dx * sensitivity;
     pendingDy += dy * sensitivity;
 
-    const now = Date.now();
-    const throttleMs = clampNumber(state.moveThrottleMs, 0);
-    if (throttleMs > 0 && now - state.lastMoveAt < throttleMs) {
-      return { ok: true, skipped: true };
-    }
-    state.lastMoveAt = now;
-
     const moveX = pendingDx;
     const moveY = pendingDy;
     pendingDx = 0;
@@ -115,6 +108,21 @@ function createCommandRouter({ mouseController, state }) {
     return { ok: true };
   }
 
+  async function handleVolume(payload) {
+    const action = String(payload.action || 'up').toLowerCase();
+    try {
+      if (typeof mouseController.changeVolume === 'function') {
+        await mouseController.changeVolume(action);
+      } else {
+        const key = action === 'up' ? 'volumeup' : 'volumedown';
+        await mouseController.pressKey(key);
+      }
+    } catch (err) {
+      console.warn('[router] handleVolume error:', err.message);
+    }
+    return { ok: true };
+  }
+
   async function handle(payload, context = {}) {
     if (!payload || typeof payload !== 'object') {
       throw new Error('Invalid packet');
@@ -140,6 +148,8 @@ function createCommandRouter({ mouseController, state }) {
         return handleKey(payload, context);
       case 'type':
         return handleType(payload, context);
+      case 'volume':
+        return handleVolume(payload, context);
       case 'ping':
         if (context.socket && context.socket.open) {
           context.socket.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));

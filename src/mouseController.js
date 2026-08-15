@@ -142,6 +142,11 @@ while ($line = [Console]::ReadLine()) {
             $rawKey = $line.Substring(2)
             [System.Windows.Forms.SendKeys]::SendWait($rawKey)
         }
+        'V' {
+            $act = $parts[1]
+            $w = New-Object -ComObject WScript.Shell
+            if ($act -eq 'up') { $w.SendKeys([char]175) } else { $w.SendKeys([char]174) }
+        }
     }
 }
 `;
@@ -203,6 +208,9 @@ while ($line = [Console]::ReadLine()) {
     },
     async typeText(text) {
       sendCmd(`K ${escapeSendKeys(text)}`);
+    },
+    async changeVolume(action) {
+      sendCmd(`V ${String(action || 'up').toLowerCase()}`);
     }
   };
 }
@@ -318,12 +326,16 @@ while True:
     elif cmd == 'T' and display:
         for char in arg:
             send_key_event(char)
+    elif cmd == 'V' and display:
+        act = arg.strip().lower()
+        key_name = 'XF86AudioRaiseVolume' if act == 'up' else 'XF86AudioLowerVolume'
+        send_key_event(key_name)
 `;
 
   function initPythonWorker() {
     if (!isLinux || pythonChild) return;
     try {
-      pythonChild = spawn('python3', ['-c', pythonScript], {
+      pythonChild = spawn('python3', ['-u', '-c', pythonScript], {
         stdio: ['pipe', 'ignore', 'ignore']
       });
       pythonChild.on('exit', () => {
@@ -426,6 +438,19 @@ while True:
           }
         });
       }
+    },
+    async changeVolume(action) {
+      if (!isLinux) return;
+      const act = String(action || 'up').toLowerCase();
+      if (!sendPythonCmd(`V ${act}`)) {
+        const key = act === 'up' ? 'XF86AudioRaiseVolume' : 'XF86AudioLowerVolume';
+        execFile('xdotool', ['key', key], (err) => {
+          if (err) {
+            const step = act === 'up' ? '+5%' : '-5%';
+            execFile('pactl', ['set-sink-volume', '@DEFAULT_SINK@', step], () => {});
+          }
+        });
+      }
     }
   };
 }
@@ -479,7 +504,7 @@ while True:
   function initPythonWorker() {
     if (!isMac || pythonChild) return;
     try {
-      pythonChild = spawn('python3', ['-c', pythonScript], {
+      pythonChild = spawn('python3', ['-u', '-c', pythonScript], {
         stdio: ['pipe', 'ignore', 'ignore']
       });
       pythonChild.on('exit', () => {
@@ -580,6 +605,14 @@ while True:
       if (!isMac) return;
       const escaped = String(text || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       execFile('osascript', ['-e', `tell application "System Events" to keystroke "${escaped}"`], () => {});
+    },
+    async changeVolume(action) {
+      if (!isMac) return;
+      const act = String(action || 'up').toLowerCase();
+      const script = act === 'up'
+        ? 'set volume output volume ((output volume of (get volume settings)) + 5)'
+        : 'set volume output volume ((output volume of (get volume settings)) - 5)';
+      execFile('osascript', ['-e', script], () => {});
     }
   };
 }
@@ -732,6 +765,14 @@ function createNutController() {
     },
     async typeText(text) {
       await keyboard.type(String(text));
+    },
+    async changeVolume(action) {
+      const act = String(action || 'up').toLowerCase();
+      const key = act === 'up' ? Key.AudioVolumeUp : Key.AudioVolumeDown;
+      if (key) {
+        await keyboard.pressKey(key);
+        await keyboard.releaseKey(key);
+      }
     }
   };
 }
@@ -791,6 +832,11 @@ function createRobotController() {
     },
     async typeText(text) {
       robot.typeString(String(text));
+    },
+    async changeVolume(action) {
+      const act = String(action || 'up').toLowerCase();
+      const key = act === 'up' ? 'audio_vol_up' : 'audio_vol_down';
+      robot.keyTap(key);
     }
   };
 }
