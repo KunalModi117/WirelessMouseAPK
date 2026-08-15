@@ -33,6 +33,7 @@ const DEFAULT_TARGET = {
 };
 
 const STORAGE_KEY = '@wireless_mouse_settings_v1';
+const STORAGE_KEY_TARGET = '@wireless_mouse_last_target_v1';
 const DUMMY_BUFFER = '  ';
 
 function toJson(payload) {
@@ -78,12 +79,54 @@ async function safeParseSettings() {
   }
 }
 
+async function safeParseLastTarget() {
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_KEY_TARGET);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.ip) {
+      return null;
+    }
+    return {
+      ip: String(parsed.ip).trim(),
+      wsPort: String(parsed.wsPort || '41235'),
+      udpMovePort: String(parsed.udpMovePort || '41236'),
+      discoveryPort: String(parsed.discoveryPort || '41234'),
+      host: parsed.host ? String(parsed.host) : '',
+      platform: parsed.platform ? String(parsed.platform) : ''
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function safeSaveLastTarget(targetObj) {
+  try {
+    if (!targetObj || !targetObj.ip) return;
+    await AsyncStorage.setItem(
+      STORAGE_KEY_TARGET,
+      JSON.stringify({
+        ip: targetObj.ip,
+        wsPort: targetObj.wsPort || '41235',
+        udpMovePort: targetObj.udpMovePort || '41236',
+        discoveryPort: targetObj.discoveryPort || '41234',
+        host: targetObj.host || '',
+        platform: targetObj.platform || ''
+      })
+    );
+  } catch (_) {}
+}
+
 function normalizeDiscoveredTarget(payload, fallbackAddress) {
   return {
     ip: payload.ip || fallbackAddress,
     wsPort: String(payload.httpPort || 41235),
     udpMovePort: String(payload.udpMovePort || 41236),
-    discoveryPort: String(payload.udpDiscoveryPort || 41234)
+    discoveryPort: String(payload.udpDiscoveryPort || 41234),
+    host: payload.host || '',
+    platform: payload.platform || ''
   };
 }
 
@@ -167,10 +210,21 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const saved = await safeParseSettings();
-      if (mounted && saved) {
-        setSettings(saved);
-        setDraftSettings(saved);
+      const savedSettings = await safeParseSettings();
+      if (mounted && savedSettings) {
+        setSettings(savedSettings);
+        setDraftSettings(savedSettings);
+      }
+      const savedTarget = await safeParseLastTarget();
+      if (mounted && savedTarget && savedTarget.ip) {
+        setTarget(savedTarget);
+        setManualDraft(savedTarget);
+        addDebugLog(
+          'info',
+          'Loaded saved PC target',
+          `${savedTarget.host ? `${savedTarget.host} (${savedTarget.ip})` : savedTarget.ip}:${savedTarget.wsPort}`
+        );
+        connectToServer(savedTarget, true);
       }
     })();
 
@@ -370,7 +424,11 @@ export default function App() {
         return;
       }
       setConnectionStatus('connected');
-      setConnectedHost(`${server.ip}:${server.wsPort}`);
+      const initialHostLabel = server.host
+        ? `🖥️ ${server.host} (${server.ip}:${server.wsPort})`
+        : `${server.ip}:${server.wsPort}`;
+      setConnectedHost(initialHostLabel);
+      safeSaveLastTarget(server);
       lastPongAtRef.current = Date.now();
       addDebugLog('info', 'WebSocket connected', wsUrl);
       flushQueue();
@@ -399,7 +457,19 @@ export default function App() {
         const payload = JSON.parse(event.data);
         lastPongAtRef.current = Date.now();
         if (payload.type === 'welcome' || payload.type === 'handshake-ack') {
-          setConnectedHost(`${payload.serverIp || server.ip}:${payload.httpPort || server.wsPort}`);
+          const updatedHost = payload.host || server.host || '';
+          const updatedPlatform = payload.platform || server.platform || '';
+          const updatedServer = {
+            ...server,
+            host: updatedHost,
+            platform: updatedPlatform
+          };
+          setTarget(updatedServer);
+          const finalHostLabel = updatedHost
+            ? `🖥️ ${updatedHost} (${payload.serverIp || server.ip}:${payload.httpPort || server.wsPort})`
+            : `${payload.serverIp || server.ip}:${payload.httpPort || server.wsPort}`;
+          setConnectedHost(finalHostLabel);
+          safeSaveLastTarget(updatedServer);
           addDebugLog('info', 'Handshake received', JSON.stringify(payload));
         }
       } catch (_) {
@@ -936,8 +1006,12 @@ export default function App() {
                       style={styles.discoveredRow}
                     >
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.discoveredIpText}>{item.ip}</Text>
-                        <Text style={styles.discoveredMetaText}>WS {item.wsPort} | UDP {item.udpMovePort}</Text>
+                        <Text style={styles.discoveredIpText}>
+                          {item.host ? `🖥️ ${item.host}` : item.ip}
+                        </Text>
+                        <Text style={styles.discoveredMetaText}>
+                          {item.host ? `${item.ip} | ` : ''}WS {item.wsPort} | UDP {item.udpMovePort}
+                        </Text>
                       </View>
                       <View style={styles.connectPill}>
                         <Text style={styles.connectPillText}>Connect</Text>

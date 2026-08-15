@@ -154,7 +154,9 @@ async function main() {
         version: VERSION,
         startedAt: serverState.startedAt,
         discoveryLastSentAt: serverState.lastDiscoverySentAt,
-        clients: serverState.clients.size
+        clients: serverState.clients.size,
+        host: os.hostname(),
+        platform: os.platform()
       }));
       return;
     }
@@ -189,7 +191,9 @@ async function main() {
       httpPort: PORTS.http,
       udpMovePort: PORTS.udpMove,
       udpDiscoveryPort: PORTS.udpDiscovery,
-      heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS
+      heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+      host: os.hostname(),
+      platform: os.platform()
     }));
 
     createHeartbeat(ws, socketId);
