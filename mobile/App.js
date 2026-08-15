@@ -6,7 +6,6 @@ import {
   Modal,
   PanResponder,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Switch,
@@ -14,6 +13,7 @@ import {
   TextInput,
   View
 } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -258,6 +258,15 @@ export default function App() {
       hiddenInputRef.current.focus();
     }
   }, [keyboardVisible]);
+
+  useEffect(() => {
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardVisible(false);
+    });
+    return () => {
+      hideSub.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (!manualMode && discovered.length > 0 && connectionStatus !== 'connected') {
@@ -714,32 +723,38 @@ export default function App() {
   }
 
   return (
-    <GestureHandlerRootView style={styles.root}>
-      <StatusBar style="light" />
-      <SafeAreaView style={styles.safe}>
-        <View style={styles.shell}>
-          {/* 1. HEADER (Minimal, Icon-only) */}
-          <View style={styles.header}>
-            <TactileButton onPress={openConnectionModal} style={styles.headerIconBtn}>
-              <View
-                style={[
-                  styles.statusDot,
-                  connectionStatus === 'connected'
-                    ? styles.statusDotGreen
-                    : connectionStatus === 'connecting'
-                      ? styles.statusDotYellow
-                      : styles.statusDotRed
-                ]}
-              />
-            </TactileButton>
-
-            <View style={styles.headerRightActions}>
-              <TactileButton
-                onPress={() => setKeyboardVisible((val) => !val)}
-                style={[styles.headerIconBtn, keyboardVisible && styles.headerIconBtnActive]}
-              >
-                <Text style={styles.headerIconText}>⌨</Text>
+    <SafeAreaProvider>
+      <GestureHandlerRootView style={styles.root}>
+        <StatusBar style="light" />
+        <SafeAreaView style={styles.safe} edges={['top', 'left', 'right', 'bottom']}>
+          <View style={styles.shell}>
+            {/* 1. HEADER (Minimal, Icon-only) */}
+            <View style={styles.header}>
+              <TactileButton onPress={openConnectionModal} style={styles.headerIconBtn}>
+                <View
+                  style={[
+                    styles.statusDot,
+                    connectionStatus === 'connected'
+                      ? styles.statusDotGreen
+                      : connectionStatus === 'connecting'
+                        ? styles.statusDotYellow
+                        : styles.statusDotRed
+                  ]}
+                />
               </TactileButton>
+
+              <View style={styles.headerRightActions}>
+                <TactileButton
+                  onPress={() => {
+                    setKeyboardVisible(true);
+                    if (hiddenInputRef.current) {
+                      hiddenInputRef.current.focus();
+                    }
+                  }}
+                  style={styles.headerIconBtn}
+                >
+                  <Text style={styles.headerIconText}>⌨</Text>
+                </TactileButton>
 
               <TactileButton
                 onPress={() => {
@@ -1195,6 +1210,7 @@ export default function App() {
         </View>
       </Modal>
     </GestureHandlerRootView>
+    </SafeAreaProvider>
   );
 }
 
