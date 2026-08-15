@@ -256,8 +256,10 @@ function createLinuxFallbackController() {
   const scrollAccumulator = createScrollAccumulator(10);
   let pythonChild = null;
 
+  let pyDiagStats = { pythonCmds: 0, coalesced: 0, maxQueue: 0, lastReceivedAt: 0 };
+
   const pythonScript = `
-import sys, ctypes
+import sys, ctypes, select, time
 
 x11 = None
 xtst = None
@@ -269,6 +271,11 @@ try:
     display = x11.XOpenDisplay(None)
 except Exception:
     display = None
+
+diag_m_cmds = 0
+diag_coalesced = 0
+diag_max_queue = 0
+diag_last_time = time.time()
 
 key_mapping = {
     'up': 'Up',
@@ -332,10 +339,46 @@ while True:
     if cmd == 'M' and display:
         m_parts = arg.split()
         if len(m_parts) >= 2:
-            dx, dy = int(m_parts[0]), int(m_parts[1])
-            x11.XWarpPointer(display, 0, 0, 0, 0, 0, 0, dx, dy)
-            x11.XFlush(display)
-    elif cmd == 'C' and display:
+            diag_m_cmds += 1
+            tot_dx = int(m_parts[0])
+            tot_dy = int(m_parts[1])
+            batch_count = 1
+            while select.select([sys.stdin], [], [], 0)[0]:
+                nxt_line = sys.stdin.readline()
+                if not nxt_line:
+                    break
+                nxt_clean = nxt_line.rstrip('\\r\\n')
+                if not nxt_clean:
+                    continue
+                nxt_parts = nxt_clean.split(' ', 1)
+                if nxt_parts[0] == 'M':
+                    sub_parts = nxt_parts[1].split() if len(nxt_parts) > 1 else []
+                    if len(sub_parts) >= 2:
+                        diag_m_cmds += 1
+                        batch_count += 1
+                        tot_dx += int(sub_parts[0])
+                        tot_dy += int(sub_parts[1])
+                else:
+                    if tot_dx != 0 or tot_dy != 0:
+                        x11.XWarpPointer(display, 0, 0, 0, 0, 0, 0, tot_dx, tot_dy)
+                        x11.XFlush(display)
+                        tot_dx, tot_dy = 0, 0
+                    line_clean = nxt_clean
+                    parts = nxt_parts
+                    cmd = parts[0]
+                    arg = parts[1] if len(parts) > 1 else ''
+                    break
+
+            if batch_count > 1:
+                diag_coalesced += (batch_count - 1)
+                if batch_count > diag_max_queue:
+                    diag_max_queue = batch_count
+
+            if tot_dx != 0 or tot_dy != 0:
+                x11.XWarpPointer(display, 0, 0, 0, 0, 0, 0, tot_dx, tot_dy)
+                x11.XFlush(display)
+
+    if cmd == 'C' and display:
         btn_name = arg.strip()
         btn = 3 if btn_name == 'right' else 1
         xtst.XTestFakeButtonEvent(display, btn, True, 0)
@@ -366,13 +409,39 @@ while True:
         act = arg.strip().lower()
         key_name = 'XF86AudioRaiseVolume' if act == 'up' else 'XF86AudioLowerVolume'
         send_key_event(key_name)
+
+    now = time.time()
+    if now - diag_last_time >= 1.0:
+        if diag_m_cmds > 0:
+            sys.stdout.write(f"PDIAG {diag_m_cmds} {diag_coalesced} {diag_max_queue}\\n")
+            sys.stdout.flush()
+        diag_m_cmds = 0
+        diag_coalesced = 0
+        diag_max_queue = 0
+        diag_last_time = now
 `;
 
   function initPythonWorker() {
     if (!isLinux || pythonChild) return;
     try {
       pythonChild = spawn('python3', ['-u', '-c', pythonScript], {
-        stdio: ['pipe', 'ignore', 'ignore']
+        stdio: ['pipe', 'pipe', 'ignore']
+      });
+      pythonChild.stdout.on('data', (chunk) => {
+        const lines = chunk.toString('utf8').split('\n');
+        for (const l of lines) {
+          if (l.startsWith('PDIAG')) {
+            const parts = l.split(' ');
+            if (parts.length >= 4) {
+              pyDiagStats = {
+                pythonCmds: Number(parts[1]) || 0,
+                coalesced: Number(parts[2]) || 0,
+                maxQueue: Number(parts[3]) || 0,
+                lastReceivedAt: Date.now()
+              };
+            }
+          }
+        }
       });
       pythonChild.on('exit', () => {
         pythonChild = null;
@@ -405,6 +474,9 @@ while True:
 
   return {
     backendName: 'Linux Python X11 / xdotool Fallback',
+    getDiagStats() {
+      return pyDiagStats;
+    },
     async moveRelative(dx, dy) {
       if (!isLinux) return;
       const { stepX, stepY } = accumulator.add(dx, dy);

@@ -400,36 +400,37 @@ export default function App() {
     };
   }
 
-  const pendingMoveRef = useRef({ x: 0, y: 0 });
-  const flushTimerRef = useRef(null);
+  const pendingMoveRef = useRef({ x: 0, y: 0, touchCount: 0 });
+  const touchDiagRef = useRef({
+    touchEvents: 0,
+    wsSent: 0,
+    coalesced: 0,
+    lost: 0,
+    lastDiagAt: Date.now()
+  });
 
   function flushPendingMove() {
-    if (flushTimerRef.current) {
-      clearTimeout(flushTimerRef.current);
-      flushTimerRef.current = null;
-    }
-    if (Math.abs(pendingMoveRef.current.x) > 0.001 || Math.abs(pendingMoveRef.current.y) > 0.001) {
+    if (Math.abs(pendingMoveRef.current.x) > 0.0001 || Math.abs(pendingMoveRef.current.y) > 0.0001) {
       const moveX = pendingMoveRef.current.x;
       const moveY = pendingMoveRef.current.y;
-      pendingMoveRef.current = { x: 0, y: 0 };
+      const count = pendingMoveRef.current.touchCount || 1;
+      if (count > 1) {
+        touchDiagRef.current.coalesced += (count - 1);
+      }
+      pendingMoveRef.current = { x: 0, y: 0, touchCount: 0 };
+
       const scaledDx = moveX * settings.mouseSensitivity;
       const scaledDy = moveY * settings.mouseSensitivity;
-      sendWs({
+      const sent = sendWs({
         type: 'move',
         dx: scaledDx,
         dy: scaledDy,
         sensitivity: 1,
         smooth: settings.smoothAcceleration
       });
-    }
-  }
-
-  function scheduleFlush() {
-    if (!flushTimerRef.current) {
-      flushTimerRef.current = setTimeout(() => {
-        flushTimerRef.current = null;
-        flushPendingMove();
-      }, 8);
+      if (sent) {
+        touchDiagRef.current.wsSent += 1;
+      }
     }
   }
 
@@ -439,16 +440,33 @@ export default function App() {
       return;
     }
 
+    const now = Date.now();
+    touchDiagRef.current.touchEvents += 1;
+    pendingMoveRef.current.touchCount = (pendingMoveRef.current.touchCount || 0) + 1;
     pendingMoveRef.current.x += dx;
     pendingMoveRef.current.y += dy;
 
-    const now = Date.now();
-    if (now - lastMoveAtRef.current < 8) {
-      scheduleFlush();
-      return;
+    if (now - lastMoveAtRef.current >= 8) {
+      lastMoveAtRef.current = now;
+      flushPendingMove();
     }
-    lastMoveAtRef.current = now;
-    flushPendingMove();
+
+    if (now - touchDiagRef.current.lastDiagAt >= 1000) {
+      if (touchDiagRef.current.touchEvents > 0) {
+        addDebugLog(
+          'diag',
+          'Mobile Diag (1s window)',
+          `Touch: ${touchDiagRef.current.touchEvents}/s | WS Sent: ${touchDiagRef.current.wsSent}/s | Coalesced: ${touchDiagRef.current.coalesced} | Lost: ${touchDiagRef.current.lost}`
+        );
+      }
+      touchDiagRef.current = {
+        touchEvents: 0,
+        wsSent: 0,
+        coalesced: 0,
+        lost: 0,
+        lastDiagAt: now
+      };
+    }
   }
 
   function sendClick(button) {
@@ -589,6 +607,8 @@ export default function App() {
 
           if (Math.abs(dx) + Math.abs(dy) > 0.1) {
             sendMove(dx, dy);
+          } else {
+            touchDiagRef.current.lost += 1;
           }
         },
         onPanResponderRelease: () => {

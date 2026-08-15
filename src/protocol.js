@@ -28,8 +28,14 @@ function createCommandRouter({ mouseController, state }) {
 
   let pendingDx = 0;
   let pendingDy = 0;
+  let diagServerMoves = 0;
+  let diagTotalTimeMs = 0;
+  let diagMaxTimeMs = 0;
+  let diagLastTime = Date.now();
 
   async function handleMove(payload) {
+    const startTime = performance.now();
+
     const dx = clampNumber(payload.dx);
     const dy = clampNumber(payload.dy);
     const sensitivity = clampNumber(payload.sensitivity, 1);
@@ -48,6 +54,32 @@ function createCommandRouter({ mouseController, state }) {
     } catch (err) {
       console.warn('[router] handleMove error:', err.message);
     }
+
+    const elapsed = performance.now() - startTime;
+    diagServerMoves += 1;
+    diagTotalTimeMs += elapsed;
+    if (elapsed > diagMaxTimeMs) {
+      diagMaxTimeMs = elapsed;
+    }
+
+    const now = Date.now();
+    if (now - diagLastTime >= 1000) {
+      if (diagServerMoves > 0) {
+        const pyStats = typeof mouseController.getDiagStats === 'function' ? mouseController.getDiagStats() : {};
+        const avgMs = (diagTotalTimeMs / diagServerMoves).toFixed(2);
+        const maxMs = diagMaxTimeMs.toFixed(2);
+        const pythonCmds = pyStats.pythonCmds || diagServerMoves;
+        const coalesced = pyStats.coalesced || 0;
+        const maxQueue = pyStats.maxQueue || 1;
+
+        console.log(`[MOUSE-DIAG-SERVER]\n  Server moves/sec: ${diagServerMoves}\n  Python cmds/sec: ${pythonCmds}\n  Coalesced moves: ${coalesced}\n  IPC queue depth (max batch): ${maxQueue}\n  Avg processing time: ${avgMs}ms\n  Max processing time: ${maxMs}ms\n`);
+      }
+      diagServerMoves = 0;
+      diagTotalTimeMs = 0;
+      diagMaxTimeMs = 0;
+      diagLastTime = now;
+    }
+
     return { ok: true };
   }
 
