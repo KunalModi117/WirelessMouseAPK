@@ -35,9 +35,41 @@ function createSubPixelAccumulator() {
   };
 }
 
+function createScrollAccumulator(threshold = 10) {
+  let accumulated = 0;
+
+  return {
+    add(delta) {
+      const val = Number(delta) || 0;
+      if (val === 0) return 0;
+
+      if ((val > 0 && accumulated < 0) || (val < 0 && accumulated > 0)) {
+        accumulated = 0;
+      }
+
+      accumulated += val;
+
+      let ticks = 0;
+      if (accumulated >= threshold) {
+        ticks = Math.floor(accumulated / threshold);
+        accumulated -= ticks * threshold;
+      } else if (accumulated <= -threshold) {
+        ticks = Math.ceil(accumulated / threshold);
+        accumulated -= ticks * threshold;
+      }
+
+      return ticks;
+    },
+    reset() {
+      accumulated = 0;
+    }
+  };
+}
+
 function createWindowsFallbackController() {
   const isWindows = process.platform === 'win32';
   const accumulator = createSubPixelAccumulator();
+  const scrollAccumulator = createScrollAccumulator(10);
   let child = null;
 
   function escapeSendKeys(text) {
@@ -195,7 +227,10 @@ while ($line = [Console]::ReadLine()) {
       }
     },
     async scroll(delta) {
-      sendCmd(`S ${Math.round(delta)}`);
+      const ticks = scrollAccumulator.add(delta);
+      if (ticks !== 0) {
+        sendCmd(`S ${ticks}`);
+      }
     },
     async click(button) {
       sendCmd(`C ${String(button || 'left').toLowerCase()}`);
@@ -218,6 +253,7 @@ while ($line = [Console]::ReadLine()) {
 function createLinuxFallbackController() {
   const isLinux = process.platform === 'linux';
   const accumulator = createSubPixelAccumulator();
+  const scrollAccumulator = createScrollAccumulator(10);
   let pythonChild = null;
 
   const pythonScript = `
@@ -384,14 +420,18 @@ while True:
     },
     async scroll(delta) {
       if (!isLinux) return;
-      const rounded = Math.round(delta);
-      if (!sendPythonCmd(`S ${rounded}`)) {
-        const btn = rounded >= 0 ? '5' : '4';
-        execFile('xdotool', ['click', btn], (err) => {
-          if (err) {
-            console.warn('[mouse-linux] xdotool scroll failed:', err.message);
-          }
-        });
+      const ticks = scrollAccumulator.add(delta);
+      if (ticks === 0) return;
+      if (!sendPythonCmd(`S ${ticks}`)) {
+        const btn = ticks >= 0 ? '5' : '4';
+        const amount = Math.abs(ticks);
+        for (let i = 0; i < amount; i += 1) {
+          execFile('xdotool', ['click', btn], (err) => {
+            if (err) {
+              console.warn('[mouse-linux] xdotool scroll failed:', err.message);
+            }
+          });
+        }
       }
     },
     async click(button) {
@@ -458,6 +498,7 @@ while True:
 function createMacFallbackController() {
   const isMac = process.platform === 'darwin';
   const accumulator = createSubPixelAccumulator();
+  const scrollAccumulator = createScrollAccumulator(10);
   let pythonChild = null;
 
   const pythonScript = `
@@ -553,9 +594,10 @@ while True:
     },
     async scroll(delta) {
       if (!isMac) return;
-      const rounded = Math.round(delta);
-      const direction = rounded >= 0 ? 'down' : 'up';
-      execFile('cliclick', [`s:${direction}:${Math.abs(rounded)}`], () => {});
+      const ticks = scrollAccumulator.add(delta);
+      if (ticks === 0) return;
+      const direction = ticks >= 0 ? 'down' : 'up';
+      execFile('cliclick', [`s:${direction}:${Math.abs(ticks)}`], () => {});
     },
     async click(button) {
       if (!isMac) return;
@@ -706,6 +748,7 @@ function resolveRobotKey(key) {
 function createNutController() {
   const { mouse, keyboard, Button, Key, Point } = nutJs;
   const accumulator = createSubPixelAccumulator();
+  const scrollAccumulator = createScrollAccumulator(10);
   let dragActive = false;
 
   return {
@@ -730,8 +773,10 @@ function createNutController() {
       await mouse.setPosition(target);
     },
     async scroll(delta) {
-      const amount = Math.max(1, Math.round(Math.abs(delta)));
-      if (delta >= 0) {
+      const ticks = scrollAccumulator.add(delta);
+      if (ticks === 0) return;
+      const amount = Math.abs(ticks);
+      if (ticks >= 0) {
         await mouse.scrollDown(amount);
         return;
       }
@@ -780,6 +825,7 @@ function createNutController() {
 function createRobotController() {
   const robot = robotjs;
   const accumulator = createSubPixelAccumulator();
+  const scrollAccumulator = createScrollAccumulator(10);
   let dragActive = false;
 
   return {
@@ -802,7 +848,10 @@ function createRobotController() {
       robot.moveMouse(pos.x + stepX, pos.y + stepY);
     },
     async scroll(delta) {
-      robot.scrollMouse(0, Math.round(delta));
+      const ticks = scrollAccumulator.add(delta);
+      if (ticks !== 0) {
+        robot.scrollMouse(0, ticks);
+      }
     },
     async click(button) {
       const normalized = String(button || 'left').toLowerCase();
