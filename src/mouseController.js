@@ -956,6 +956,143 @@ function createRobotController() {
   };
 }
 
+function createLinuxDirectController() {
+  if (process.platform !== 'linux') return null;
+
+  let display = null;
+  let XWarpPointer = null;
+  let XFlush = null;
+  let XTestFakeButtonEvent = null;
+  let XTestFakeKeyEvent = null;
+  let XStringToKeysym = null;
+  let XKeysymToKeycode = null;
+
+  try {
+    const koffi = require('koffi');
+    const libX11 = koffi.load('libX11.so.6');
+    const libXtst = koffi.load('libXtst.so.6');
+
+    const XOpenDisplay = libX11.func('void *XOpenDisplay(const char *name)');
+    XWarpPointer = libX11.func('int XWarpPointer(void *display, void *src_w, void *dest_w, int src_x, int src_y, uint src_width, uint src_height, int dest_x, int dest_y)');
+    XFlush = libX11.func('int XFlush(void *display)');
+    XStringToKeysym = libX11.func('ulong XStringToKeysym(const char *string)');
+    XKeysymToKeycode = libX11.func('uint XKeysymToKeycode(void *display, ulong keysym)');
+
+    XTestFakeButtonEvent = libXtst.func('int XTestFakeButtonEvent(void *display, uint button, bool is_press, ulong delay)');
+    XTestFakeKeyEvent = libXtst.func('int XTestFakeKeyEvent(void *display, uint keycode, bool is_press, ulong delay)');
+
+    display = XOpenDisplay(null);
+  } catch (err) {
+    console.warn('[mouse-linux-direct] Direct Koffi X11 binding failed to load:', err.message);
+    display = null;
+  }
+
+  if (!display) {
+    return null;
+  }
+
+  const accumulator = createSubPixelAccumulator();
+  const scrollAccumulator = createScrollAccumulator(10);
+
+  let directDiagStats = {
+    receivedMoves: 0,
+    directInjected: 0,
+    pendingQueue: 0,
+    totalDx: 0,
+    totalDy: 0
+  };
+
+  const keyMapping = {
+    'up': 'Up', 'down': 'Down', 'left': 'Left', 'right': 'Right',
+    'backspace': 'BackSpace', 'enter': 'Return', 'return': 'Return',
+    'space': 'space', 'tab': 'Tab', 'escape': 'Escape', 'esc': 'Escape',
+    'delete': 'Delete', 'del': 'Delete', 'home': 'Home', 'end': 'End',
+    'pageup': 'Page_Up', 'pagedown': 'Page_Down'
+  };
+
+  function sendKeyEvent(keyStr) {
+    if (!display || !keyStr) return false;
+    const target = keyMapping[keyStr.toLowerCase()] || keyStr;
+    const needsShift = target.length === 1 && target === target.toUpperCase() && target !== target.toLowerCase();
+    const keysym = XStringToKeysym(target);
+    if (!keysym) return false;
+    const keycode = XKeysymToKeycode(display, keysym);
+    if (!keycode) return false;
+
+    const shiftKc = needsShift ? XKeysymToKeycode(display, XStringToKeysym('Shift_L')) : 0;
+    if (needsShift && shiftKc) XTestFakeKeyEvent(display, shiftKc, true, 0);
+    XTestFakeKeyEvent(display, keycode, true, 0);
+    XTestFakeKeyEvent(display, keycode, false, 0);
+    if (needsShift && shiftKc) XTestFakeKeyEvent(display, shiftKc, false, 0);
+    XFlush(display);
+    return true;
+  }
+
+  return {
+    backendName: 'Linux Direct C-FFI X11 (Zero Latency)',
+    isDirect: true,
+    getDiagStats() {
+      const stats = { ...directDiagStats };
+      directDiagStats.receivedMoves = 0;
+      directDiagStats.directInjected = 0;
+      directDiagStats.pendingQueue = 0;
+      directDiagStats.totalDx = 0;
+      directDiagStats.totalDy = 0;
+      return stats;
+    },
+    async moveRelative(dx, dy) {
+      directDiagStats.receivedMoves += 1;
+      const { stepX, stepY } = accumulator.add(dx, dy);
+      if (stepX === 0 && stepY === 0) return;
+
+      XWarpPointer(display, null, null, 0, 0, 0, 0, stepX, stepY);
+      XFlush(display);
+
+      directDiagStats.directInjected += 1;
+      directDiagStats.totalDx += Math.abs(stepX);
+      directDiagStats.totalDy += Math.abs(stepY);
+      directDiagStats.pendingQueue = 0;
+    },
+    async scroll(delta) {
+      const ticks = scrollAccumulator.add(delta);
+      if (ticks === 0) return;
+      const btn = ticks >= 0 ? 5 : 4;
+      const amount = Math.abs(ticks);
+      for (let i = 0; i < amount; i += 1) {
+        XTestFakeButtonEvent(display, btn, true, 0);
+        XTestFakeButtonEvent(display, btn, false, 0);
+      }
+      XFlush(display);
+    },
+    async click(button) {
+      const normalized = String(button || 'left').toLowerCase();
+      const btn = normalized === 'right' ? 3 : 1;
+      XTestFakeButtonEvent(display, btn, true, 0);
+      XTestFakeButtonEvent(display, btn, false, 0);
+      XFlush(display);
+    },
+    async setDrag(active, button) {
+      const normalized = String(button || 'left').toLowerCase();
+      const btn = normalized === 'right' ? 3 : 1;
+      XTestFakeButtonEvent(display, btn, Boolean(active), 0);
+      XFlush(display);
+    },
+    async pressKey(key) {
+      sendKeyEvent(key);
+    },
+    async typeText(text) {
+      for (const char of String(text || '')) {
+        sendKeyEvent(char);
+      }
+    },
+    async changeVolume(action) {
+      const act = String(action || 'up').toLowerCase();
+      const keyName = act === 'up' ? 'XF86AudioRaiseVolume' : 'XF86AudioLowerVolume';
+      sendKeyEvent(keyName);
+    }
+  };
+}
+
 function createMouseController() {
   nutJs = tryLoad('@nut-tree/nut-js');
   if (nutJs) {
@@ -973,6 +1110,15 @@ function createMouseController() {
 
   if (process.platform === 'darwin') {
     return createMacFallbackController();
+  }
+
+  if (process.platform === 'linux') {
+    const directController = createLinuxDirectController();
+    if (directController) {
+      return directController;
+    }
+    console.warn('[mouse] Direct Linux X11 binding unavailable, falling back to Python worker');
+    return createLinuxFallbackController();
   }
 
   return createLinuxFallbackController();

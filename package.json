@@ -18,5 +18,8 @@
       "server.js",
       "src/**/*.js"
     ]
+  },
+  "dependencies": {
+    "koffi": "^3.1.5"
   }
 }

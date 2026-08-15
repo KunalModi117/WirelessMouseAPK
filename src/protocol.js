@@ -65,18 +65,25 @@ function createCommandRouter({ mouseController, state }) {
     const now = Date.now();
     if (now - diagLastTime >= 1000) {
       if (diagServerMoves > 0) {
-        const pyStats = typeof mouseController.getDiagStats === 'function' ? mouseController.getDiagStats() : {};
+        const stats = typeof mouseController.getDiagStats === 'function' ? mouseController.getDiagStats() : {};
         const avgMs = (diagTotalTimeMs / diagServerMoves).toFixed(2);
         const maxMs = diagMaxTimeMs.toFixed(2);
 
-        const pyRecv = pyStats.recvMoves || diagServerMoves;
-        const injectedBatches = pyStats.injectedBatches || pyRecv;
-        const maxQueue = pyStats.maxQueue || 1;
-        const coalesced = Math.max(0, pyRecv - injectedBatches);
-        const totDx = pyStats.totalDx || 0;
-        const totDy = pyStats.totalDy || 0;
+        const rec = stats.receivedMoves !== undefined ? stats.receivedMoves : (stats.recvMoves || diagServerMoves);
+        const inj = stats.directInjected !== undefined ? stats.directInjected : (stats.injectedBatches || rec);
+        const queue = stats.pendingQueue !== undefined ? stats.pendingQueue : (stats.maxQueue || 0);
+        const totDx = stats.totalDx || 0;
+        const totDy = stats.totalDy || 0;
+        const backend = mouseController.backendName || 'Unknown';
 
-        console.log(`[MOUSE-DIAG-SERVER]\n  Server moves received: ${diagServerMoves}/s\n  Python cmds received: ${pyRecv}/s\n  Injected X11 batches: ${injectedBatches}/s\n  Coalesced moves: ${coalesced}\n  Max IPC queue depth: ${maxQueue}\n  Delta preserved (sum |dx|,|dy|): (${totDx}, ${totDy})\n  Avg processing time: ${avgMs}ms\n  Max processing time: ${maxMs}ms\n`);
+        console.log(`[MOUSE-DIAG-SERVER] (${backend})
+  Server received/sec: ${diagServerMoves}
+  Direct X11 injected/sec: ${inj}
+  Pending movement queue: ${queue}
+  Total dx/dy injected: (${totDx}, ${totDy})
+  Avg processing time: ${avgMs}ms
+  Max processing time: ${maxMs}ms
+`);
       }
       diagServerMoves = 0;
       diagTotalTimeMs = 0;
