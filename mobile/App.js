@@ -7,6 +7,7 @@ import {
   PanResponder,
   Pressable,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
   Switch,
   Text,
@@ -15,7 +16,6 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
-import Slider from '@react-native-community/slider';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
 
@@ -87,13 +87,36 @@ function normalizeDiscoveredTarget(payload, fallbackAddress) {
   };
 }
 
+/**
+ * Reusable Tactile Button following Apple design principles:
+ * Instant touch-down feedback, critically damped scaling, and strong visual feedback.
+ */
+function TactileButton({ onPress, style, pressedStyle, children, activeOpacity = 0.8, scaleDown = 0.97 }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        style,
+        pressed && [
+          styles.tactilePressed,
+          { transform: [{ scale: scaleDown }], opacity: activeOpacity },
+          pressedStyle
+        ]
+      ]}
+    >
+      {children}
+    </Pressable>
+  );
+}
+
 export default function App() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [target, setTarget] = useState(DEFAULT_TARGET);
   const [connectionStatus, setConnectionStatus] = useState('searching');
   const [connectedHost, setConnectedHost] = useState('');
-  const [manualOpen, setManualOpen] = useState(false);
+  const [connectionModalOpen, setConnectionModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [bugModalOpen, setBugModalOpen] = useState(false);
   const [manualDraft, setManualDraft] = useState(DEFAULT_TARGET);
   const [draftSettings, setDraftSettings] = useState(DEFAULT_SETTINGS);
   const [discovered, setDiscovered] = useState([]);
@@ -101,7 +124,6 @@ export default function App() {
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [inputValue, setInputValue] = useState(DUMMY_BUFFER);
   const [lastError, setLastError] = useState('');
-  const [debugOpen, setDebugOpen] = useState(false);
   const [debugLogs, setDebugLogs] = useState([]);
 
   const wsRef = useRef(null);
@@ -113,11 +135,8 @@ export default function App() {
   const hiddenInputRef = useRef(null);
   const queuedMessagesRef = useRef([]);
   const activeServerRef = useRef(null);
-  const moveAccumulatorRef = useRef({ x: 0, y: 0 });
-  const scrollAccumulatorRef = useRef(0);
   const movedRef = useRef(false);
   const multiTouchRef = useRef(false);
-  const dragActiveRef = useRef(false);
   const logsRef = useRef([]);
 
   const discoveryEnabled = true;
@@ -280,12 +299,15 @@ export default function App() {
         connectToServer(next, true);
       } else if (target.ip) {
         addDebugLog('info', 'Reconnect attempt', `${target.ip}:${target.wsPort}`);
-        connectToServer({
-          ip: target.ip,
-          wsPort: target.wsPort,
-          udpMovePort: target.udpMovePort,
-          discoveryPort: target.discoveryPort
-        }, true);
+        connectToServer(
+          {
+            ip: target.ip,
+            wsPort: target.wsPort,
+            udpMovePort: target.udpMovePort,
+            discoveryPort: target.discoveryPort
+          },
+          true
+        );
       }
     }, 3500);
   }
@@ -415,7 +437,7 @@ export default function App() {
       const moveY = pendingMoveRef.current.y;
       const count = pendingMoveRef.current.touchCount || 1;
       if (count > 1) {
-        touchDiagRef.current.coalesced += (count - 1);
+        touchDiagRef.current.coalesced += count - 1;
       }
       pendingMoveRef.current = { x: 0, y: 0, touchCount: 0 };
 
@@ -472,11 +494,6 @@ export default function App() {
   function sendClick(button) {
     addDebugLog('info', 'Click', button);
     sendWs({ type: 'click', button });
-  }
-
-  function sendDrag(active) {
-    addDebugLog('info', active ? 'Drag start' : 'Drag end');
-    sendWs({ type: 'drag', active, button: 'left' });
   }
 
   function sendScroll(delta) {
@@ -662,9 +679,9 @@ export default function App() {
     [settings.scrollSensitivity]
   );
 
-  function openManual() {
+  function openConnectionModal() {
     setManualDraft(target.ip ? target : DEFAULT_TARGET);
-    setManualOpen(true);
+    setConnectionModalOpen(true);
   }
 
   function saveManual() {
@@ -680,7 +697,7 @@ export default function App() {
     };
     setManualMode(true);
     setTarget(next);
-    setManualOpen(false);
+    setConnectionModalOpen(false);
     addDebugLog('info', 'Manual connect submitted', `${next.ip}:${next.wsPort}`);
     connectToServer(next);
   }
@@ -692,30 +709,8 @@ export default function App() {
     }
     setManualMode(false);
     setTarget(next);
+    setConnectionModalOpen(false);
     connectToServer(next);
-  }
-
-  function renderButton(label, onPress, styleType = 'primary') {
-    return (
-      <Pressable
-        key={label}
-        onPress={onPress}
-        style={({ pressed }) => [
-          styles.button,
-          styleType === 'ghost' && styles.buttonGhost,
-          pressed && styles.buttonPressed
-        ]}
-      >
-        <Text style={[styles.buttonText, styleType === 'ghost' && styles.buttonTextGhost]}>{label}</Text>
-      </Pressable>
-    );
-  }
-
-  function openDebugPanel() {
-    setDebugOpen(true);
-    if (logsRef.current.length === 0) {
-      addDebugLog('info', 'Diagnostics opened', 'No logs yet');
-    }
   }
 
   return (
@@ -723,113 +718,114 @@ export default function App() {
       <StatusBar style="light" />
       <SafeAreaView style={styles.safe}>
         <View style={styles.shell}>
-          <View style={styles.topBar}>
-            <View>
-              <Text style={styles.title}>Wireless Remote</Text>
-              <Text style={styles.subtitle}>
-                {connectionStatus === 'connected'
-                  ? `Connected to ${connectedHost}`
-                  : connectionStatus === 'connecting'
-                    ? 'Connecting...'
-                    : discoveryEnabled
-                      ? 'Discovering PCs on local network'
-                      : 'Manual connect mode'}
-              </Text>
-            </View>
-            <View style={styles.headerActions}>
-              <Pressable onPress={openDebugPanel} style={({ pressed }) => [styles.bugButton, pressed && styles.buttonPressed]}>
-                <Text style={styles.bugButtonText}>🐞</Text>
-              </Pressable>
-              <View style={styles.statusPillWrap}>
-                <View
-                  style={[
-                    styles.statusDot,
-                    connectionStatus === 'connected' ? styles.statusGreen : styles.statusRed
-                  ]}
-                />
-                <Text style={styles.statusText}>{connectionStatus}</Text>
-              </View>
-            </View>
-          </View>
+          {/* 1. HEADER (Minimal, Icon-only) */}
+          <View style={styles.header}>
+            <TactileButton onPress={openConnectionModal} style={styles.headerIconBtn}>
+              <View
+                style={[
+                  styles.statusDot,
+                  connectionStatus === 'connected'
+                    ? styles.statusDotGreen
+                    : connectionStatus === 'connecting'
+                      ? styles.statusDotYellow
+                      : styles.statusDotRed
+                ]}
+              />
+            </TactileButton>
 
-          <View style={styles.volumeBar}>
-            <Pressable
-              onPress={() => sendVolume('down')}
-              style={({ pressed }) => [styles.volumeButton, pressed && styles.buttonPressed]}
-            >
-              <Text style={styles.volumeButtonText}>🔉 Vol -</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => sendVolume('up')}
-              style={({ pressed }) => [styles.volumeButton, pressed && styles.buttonPressed]}
-            >
-              <Text style={styles.volumeButtonText}>🔊 Vol +</Text>
-            </Pressable>
-          </View>
+            <View style={styles.headerRightActions}>
+              <TactileButton
+                onPress={() => setKeyboardVisible((val) => !val)}
+                style={[styles.headerIconBtn, keyboardVisible && styles.headerIconBtnActive]}
+              >
+                <Text style={styles.headerIconText}>⌨</Text>
+              </TactileButton>
 
-          {!!lastError && <Text style={styles.errorBanner}>{lastError}</Text>}
-
-          <View style={styles.discoveryCard}>
-            <View style={styles.discoveryHeader}>
-              <Text style={styles.sectionLabel}>Discovered</Text>
-              {renderButton('Manual', openManual, 'ghost')}
-            </View>
-            {discovered.length === 0 ? (
-              <Text style={styles.hintText}>
-                {discoveryEnabled
-                  ? 'Waiting for the desktop server broadcast...'
-                  : 'Discovery unavailable in this build. Enter the PC IP manually.'}
-              </Text>
-            ) : (
-              discovered.map((item, index) => (
-                <Pressable
-                  key={`${item.ip}:${item.wsPort}`}
-                  onPress={() => connectDiscovered(index)}
-                  style={styles.discoveryItem}
-                >
-                  <Text style={styles.discoveryItemTitle}>{item.ip}</Text>
-                  <Text style={styles.discoveryItemMeta}>WS {item.wsPort} | UDP {item.udpMovePort}</Text>
-                </Pressable>
-              ))
-            )}
-          </View>
-
-          <View style={styles.trackpadRow}>
-            <View style={styles.trackpadShell} {...trackpadResponder.panHandlers}>
-              <Text style={styles.trackpadHint}>Trackpad: drag to move, tap to click</Text>
-              <Text style={styles.trackpadSubhint}>Two fingers: tap for right click, drag to scroll</Text>
-              <View style={styles.trackpadGlow} />
-            </View>
-
-            <View style={styles.scrollStrip} {...scrollResponder.panHandlers}>
-              <Text style={styles.scrollStripLabel}>Scroll</Text>
+              <TactileButton
+                onPress={() => {
+                  setDraftSettings(settings);
+                  setSettingsOpen(true);
+                }}
+                style={styles.headerIconBtn}
+              >
+                <Text style={styles.headerIconText}>⚙</Text>
+              </TactileButton>
             </View>
           </View>
 
-          <View style={styles.bottomBar}>
-            {renderButton('Left Click', () => sendClick('left'))}
-            {renderButton('Right Click', () => sendClick('right'))}
+          {/* 2. COMPACT VOLUME CONTROLS */}
+          <View style={styles.volumeGroup}>
+            <TactileButton onPress={() => sendVolume('down')} style={styles.volumeBtn}>
+              <Text style={styles.volumeBtnIcon}>🔉</Text>
+              <Text style={styles.volumeBtnSign}>−</Text>
+            </TactileButton>
+            <View style={styles.volumeDivider} />
+            <TactileButton onPress={() => sendVolume('up')} style={styles.volumeBtn}>
+              <Text style={styles.volumeBtnIcon}>🔊</Text>
+              <Text style={styles.volumeBtnSign}>+</Text>
+            </TactileButton>
           </View>
 
-          <View style={styles.dPad}>
-            <View style={styles.dPadRow}>
-              {renderButton('↑', () => sendKey('Up'), 'ghost')}
+          {/* ERROR BANNER IF ANY */}
+          {!!lastError && (
+            <TactileButton onPress={() => setLastError('')} style={styles.errorBanner}>
+              <Text style={styles.errorBannerText}>{lastError}</Text>
+            </TactileButton>
+          )}
+
+          {/* 3. MAIN TRACKPAD AREA (~60-70% Height Focus) & INTEGRATED SCROLL STRIP */}
+          <View style={styles.trackpadContainer}>
+            <View style={styles.trackpadSurface} {...trackpadResponder.panHandlers}>
+              {/* Clean Precision Surface (No Clutter, No Hints) */}
+              <View style={styles.trackpadInnerBorder} />
             </View>
-            <View style={styles.dPadRow}>
-              {renderButton('←', () => sendKey('Left'), 'ghost')}
-              {renderButton('↓', () => sendKey('Down'), 'ghost')}
-              {renderButton('→', () => sendKey('Right'), 'ghost')}
+
+            {/* Scroll Strip integrated on right inner edge */}
+            <View style={styles.integratedScrollStrip} {...scrollResponder.panHandlers}>
+              <Text style={styles.scrollChevron}>▲</Text>
+              <View style={styles.scrollBarLine} />
+              <Text style={styles.scrollChevron}>▼</Text>
             </View>
           </View>
 
-          <View style={styles.footer}>
-            {renderButton(keyboardVisible ? 'Hide Keyboard' : 'Keyboard', () => setKeyboardVisible((value) => !value))}
-            {renderButton('Settings', () => {
-              setDraftSettings(settings);
-              setSettingsOpen(true);
-            }, 'ghost')}
+          {/* 4. LEFT / RIGHT CLICK BUTTONS */}
+          <View style={styles.clickBar}>
+            <TactileButton onPress={() => sendClick('left')} style={styles.leftClickBtn}>
+              <View style={styles.clickIconIndicatorLeft} />
+            </TactileButton>
+            <View style={styles.clickDivider} />
+            <TactileButton onPress={() => sendClick('right')} style={styles.rightClickBtn}>
+              <View style={styles.clickIconIndicatorRight} />
+            </TactileButton>
           </View>
 
+          {/* 5. BOTTOM DIRECTIONAL & FUNCTION CONTROLS (3 EQUAL COLUMNS) */}
+          <View style={styles.bottomPadGrid}>
+            {/* Column 1: Left Arrow + Keyboard */}
+            <TactileButton onPress={() => sendKey('Left')} style={styles.dPadLargeBtn}>
+              <Text style={styles.dPadArrowText}>◀</Text>
+              <Text style={styles.dPadSubIcon}>⌨</Text>
+            </TactileButton>
+
+            {/* Column 2: Up Arrow stacked over Down Arrow */}
+            <View style={styles.dPadCenterCol}>
+              <TactileButton onPress={() => sendKey('Up')} style={styles.dPadHalfBtnTop}>
+                <Text style={styles.dPadArrowText}>▲</Text>
+              </TactileButton>
+              <View style={styles.dPadCenterDivider} />
+              <TactileButton onPress={() => sendKey('Down')} style={styles.dPadHalfBtnBottom}>
+                <Text style={styles.dPadArrowText}>▼</Text>
+              </TactileButton>
+            </View>
+
+            {/* Column 3: Right Arrow + Keyboard */}
+            <TactileButton onPress={() => sendKey('Right')} style={styles.dPadLargeBtn}>
+              <Text style={styles.dPadArrowText}>▶</Text>
+              <Text style={styles.dPadSubIcon}>⌨</Text>
+            </TactileButton>
+          </View>
+
+          {/* HIDDEN INPUT FOR KEYBOARD FORWARDING */}
           {keyboardVisible && (
             <TextInput
               ref={hiddenInputRef}
@@ -842,159 +838,358 @@ export default function App() {
               autoCapitalize="none"
               autoCorrect={false}
               blurOnSubmit={false}
-              placeholder="Type here"
-              placeholderTextColor="#94a3b8"
+              placeholder=""
             />
           )}
         </View>
       </SafeAreaView>
 
-      <Modal visible={manualOpen} animationType="slide" transparent onRequestClose={() => setManualOpen(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Manual Connect</Text>
-            <TextInput
-              value={manualDraft.ip}
-              onChangeText={(value) => setManualDraft((current) => ({ ...current, ip: value }))}
-              placeholder="PC IP address"
-              placeholderTextColor="#64748b"
-              keyboardType="numeric"
-              style={styles.input}
-            />
-            <TextInput
-              value={manualDraft.wsPort}
-              onChangeText={(value) => setManualDraft((current) => ({ ...current, wsPort: value }))}
-              placeholder="WebSocket Port"
-              placeholderTextColor="#64748b"
-              keyboardType="numeric"
-              style={styles.input}
-            />
-            <TextInput
-              value={manualDraft.udpMovePort}
-              onChangeText={(value) => setManualDraft((current) => ({ ...current, udpMovePort: value }))}
-              placeholder="UDP Move Port"
-              placeholderTextColor="#64748b"
-              keyboardType="numeric"
-              style={styles.input}
-            />
-            <View style={styles.modalActions}>
-              {renderButton('Cancel', () => setManualOpen(false), 'ghost')}
-              {renderButton('Connect', saveManual)}
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={settingsOpen} animationType="fade" transparent onRequestClose={() => setSettingsOpen(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Settings</Text>
-
-            <View style={styles.stepperContainer}>
-              <Text style={styles.stepperLabel}>Mouse Sensitivity</Text>
-              <View style={styles.stepperRow}>
-                <Pressable
-                  onPress={() =>
-                    setDraftSettings((curr) => ({
-                      ...curr,
-                      mouseSensitivity: Math.max(0.5, Math.round((curr.mouseSensitivity - 0.1) * 10) / 10)
-                    }))
-                  }
-                  style={({ pressed }) => [styles.stepperBtn, pressed && styles.buttonPressed]}
-                >
-                  <Text style={styles.stepperBtnText}>-</Text>
-                </Pressable>
-                <Text style={styles.stepperValueText}>{draftSettings.mouseSensitivity.toFixed(1)}x</Text>
-                <Pressable
-                  onPress={() =>
-                    setDraftSettings((curr) => ({
-                      ...curr,
-                      mouseSensitivity: Math.min(3.0, Math.round((curr.mouseSensitivity + 0.1) * 10) / 10)
-                    }))
-                  }
-                  style={({ pressed }) => [styles.stepperBtn, pressed && styles.buttonPressed]}
-                >
-                  <Text style={styles.stepperBtnText}>+</Text>
-                </Pressable>
-              </View>
+      {/* CONNECTION MODAL / SHEET */}
+      <Modal
+        visible={connectionModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setConnectionModalOpen(false)}
+      >
+        <View style={styles.sheetBackdrop}>
+          <View style={styles.sheetContainer}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeaderRow}>
+              <Text style={styles.sheetTitle}>Connection</Text>
+              <TactileButton onPress={() => setConnectionModalOpen(false)} style={styles.sheetCloseBtn}>
+                <Text style={styles.sheetCloseText}>✕</Text>
+              </TactileButton>
             </View>
 
-            <View style={styles.stepperContainer}>
-              <Text style={styles.stepperLabel}>Scroll Sensitivity</Text>
-              <View style={styles.stepperRow}>
-                <Pressable
-                  onPress={() =>
-                    setDraftSettings((curr) => ({
-                      ...curr,
-                      scrollSensitivity: Math.max(0.5, Math.round((curr.scrollSensitivity - 0.1) * 10) / 10)
-                    }))
-                  }
-                  style={({ pressed }) => [styles.stepperBtn, pressed && styles.buttonPressed]}
-                >
-                  <Text style={styles.stepperBtnText}>-</Text>
-                </Pressable>
-                <Text style={styles.stepperValueText}>{draftSettings.scrollSensitivity.toFixed(1)}x</Text>
-                <Pressable
-                  onPress={() =>
-                    setDraftSettings((curr) => ({
-                      ...curr,
-                      scrollSensitivity: Math.min(3.0, Math.round((curr.scrollSensitivity + 0.1) * 10) / 10)
-                    }))
-                  }
-                  style={({ pressed }) => [styles.stepperBtn, pressed && styles.buttonPressed]}
-                >
-                  <Text style={styles.stepperBtnText}>+</Text>
-                </Pressable>
-              </View>
-            </View>
-
-            <View style={styles.toggleRow}>
-              <Text style={styles.stepperLabel}>Smooth acceleration</Text>
-              <Switch
-                value={draftSettings.smoothAcceleration}
-                onValueChange={(value) => setDraftSettings((current) => ({ ...current, smoothAcceleration: value }))}
-              />
-            </View>
-            <View style={styles.modalActions}>
-              {renderButton('Close', () => setSettingsOpen(false), 'ghost')}
-              {renderButton('Save', () => {
-                setSettings(draftSettings);
-                setSettingsOpen(false);
-              })}
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={debugOpen} animationType="slide" transparent onRequestClose={() => setDebugOpen(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={[styles.modalCard, styles.debugCard]}>
-            <View style={styles.debugHeader}>
-              <Text style={styles.modalTitle}>Connection Logs</Text>
-              <Text style={styles.debugCount}>{debugLogs.length} entries</Text>
-            </View>
-            <View style={styles.debugActions}>
-              <Pressable onPress={copyDebugLogs} style={({ pressed }) => [styles.debugActionButton, pressed && styles.buttonPressed]}>
-                <Text style={styles.debugActionText}>Copy Logs</Text>
-              </Pressable>
-              <Pressable onPress={() => setDebugOpen(false)} style={({ pressed }) => [styles.debugActionButton, styles.debugActionButtonGhost, pressed && styles.buttonPressed]}>
-                <Text style={styles.debugActionText}>Close</Text>
-              </Pressable>
-            </View>
-            <View style={styles.debugList}>
-              {debugLogs.length === 0 ? (
-                <Text style={styles.debugEmpty}>No logs yet. Tap connect again and come back here.</Text>
-              ) : (
-                <View style={{ gap: 10 }}>
-                  {debugLogs.map((entry) => (
-                    <View key={entry.id} style={styles.debugLogRow}>
-                      <Text style={styles.debugLogTs}>{entry.ts}</Text>
-                      <Text style={styles.debugLogMsg}>{entry.level.toUpperCase()} {entry.message}</Text>
-                      {!!entry.details && <Text style={styles.debugLogDetails}>{entry.details}</Text>}
-                    </View>
-                  ))}
+            <ScrollView contentContainerStyle={styles.sheetBody}>
+              {/* CURRENT STATUS */}
+              <View style={styles.modalSection}>
+                <Text style={styles.sectionHeading}>Current Status</Text>
+                <View style={styles.statusCard}>
+                  <View style={styles.statusRow}>
+                    <View
+                      style={[
+                        styles.statusDot,
+                        connectionStatus === 'connected'
+                          ? styles.statusDotGreen
+                          : connectionStatus === 'connecting'
+                            ? styles.statusDotYellow
+                            : styles.statusDotRed
+                      ]}
+                    />
+                    <Text style={styles.statusStateText}>
+                      {connectionStatus === 'connected'
+                        ? `Connected`
+                        : connectionStatus === 'connecting'
+                          ? 'Connecting...'
+                          : 'Disconnected'}
+                    </Text>
+                  </View>
+                  {connectionStatus === 'connected' && !!connectedHost && (
+                    <Text style={styles.statusHostText}>{connectedHost}</Text>
+                  )}
+                  {connectionStatus === 'connected' && (
+                    <TactileButton
+                      onPress={() => {
+                        disconnectSocket();
+                        setConnectionStatus('disconnected');
+                      }}
+                      style={styles.disconnectBtn}
+                    >
+                      <Text style={styles.disconnectBtnText}>Disconnect</Text>
+                    </TactileButton>
+                  )}
                 </View>
-              )}
+              </View>
+
+              {/* DISCOVERED DEVICES */}
+              <View style={styles.modalSection}>
+                <Text style={styles.sectionHeading}>Discovered PCs</Text>
+                {discovered.length === 0 ? (
+                  <View style={styles.emptyCard}>
+                    <Text style={styles.emptyCardText}>
+                      {discoveryEnabled
+                        ? 'Scanning local Wi-Fi subnet for PC server...'
+                        : 'Discovery disabled. Enter IP below.'}
+                    </Text>
+                  </View>
+                ) : (
+                  discovered.map((item, index) => (
+                    <TactileButton
+                      key={`${item.ip}:${item.wsPort}`}
+                      onPress={() => connectDiscovered(index)}
+                      style={styles.discoveredRow}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.discoveredIpText}>{item.ip}</Text>
+                        <Text style={styles.discoveredMetaText}>WS {item.wsPort} | UDP {item.udpMovePort}</Text>
+                      </View>
+                      <View style={styles.connectPill}>
+                        <Text style={styles.connectPillText}>Connect</Text>
+                      </View>
+                    </TactileButton>
+                  ))
+                )}
+              </View>
+
+              {/* MANUAL ENTRY */}
+              <View style={styles.modalSection}>
+                <Text style={styles.sectionHeading}>Manual Connection</Text>
+                <View style={styles.manualCard}>
+                  <Text style={styles.fieldLabel}>PC IP Address</Text>
+                  <TextInput
+                    value={manualDraft.ip}
+                    onChangeText={(val) => setManualDraft((curr) => ({ ...curr, ip: val }))}
+                    placeholder="e.g. 192.168.1.100"
+                    placeholderTextColor="#475569"
+                    keyboardType="numeric"
+                    style={styles.inputField}
+                  />
+
+                  <View style={{ flexDirection: 'row', gap: 10 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.fieldLabel}>WS Port</Text>
+                      <TextInput
+                        value={manualDraft.wsPort}
+                        onChangeText={(val) => setManualDraft((curr) => ({ ...curr, wsPort: val }))}
+                        placeholder="41235"
+                        placeholderTextColor="#475569"
+                        keyboardType="numeric"
+                        style={styles.inputField}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.fieldLabel}>UDP Port</Text>
+                      <TextInput
+                        value={manualDraft.udpMovePort}
+                        onChangeText={(val) => setManualDraft((curr) => ({ ...curr, udpMovePort: val }))}
+                        placeholder="41236"
+                        placeholderTextColor="#475569"
+                        keyboardType="numeric"
+                        style={styles.inputField}
+                      />
+                    </View>
+                  </View>
+
+                  <TactileButton onPress={saveManual} style={styles.primaryActionBtn}>
+                    <Text style={styles.primaryActionText}>Connect to IP</Text>
+                  </TactileButton>
+                </View>
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* SETTINGS MODAL / SHEET */}
+      <Modal
+        visible={settingsOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setSettingsOpen(false)}
+      >
+        <View style={styles.sheetBackdrop}>
+          <View style={styles.sheetContainer}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeaderRow}>
+              <Text style={styles.sheetTitle}>Settings</Text>
+              <TactileButton onPress={() => setSettingsOpen(false)} style={styles.sheetCloseBtn}>
+                <Text style={styles.sheetCloseText}>✕</Text>
+              </TactileButton>
+            </View>
+
+            <ScrollView contentContainerStyle={styles.sheetBody}>
+              {/* GROUP: CONNECTION */}
+              <View style={styles.modalSection}>
+                <Text style={styles.sectionHeading}>Connection</Text>
+                <View style={styles.groupedContainer}>
+                  <View style={styles.groupedRow}>
+                    <Text style={styles.groupedLabel}>Status</Text>
+                    <Text style={styles.groupedValue}>
+                      {connectionStatus === 'connected' ? `Connected (${target.ip || 'PC'})` : 'Disconnected'}
+                    </Text>
+                  </View>
+                  <View style={styles.groupedDivider} />
+                  <TactileButton
+                    onPress={() => {
+                      setSettingsOpen(false);
+                      openConnectionModal();
+                    }}
+                    style={styles.groupedActionRow}
+                  >
+                    <Text style={styles.groupedActionText}>Manage Connection</Text>
+                    <Text style={styles.groupedChevron}>›</Text>
+                  </TactileButton>
+                </View>
+              </View>
+
+              {/* GROUP: INPUT */}
+              <View style={styles.modalSection}>
+                <Text style={styles.sectionHeading}>Input</Text>
+                <View style={styles.groupedContainer}>
+                  {/* Mouse Sensitivity */}
+                  <View style={styles.groupedRow}>
+                    <Text style={styles.groupedLabel}>Mouse Sensitivity</Text>
+                    <View style={styles.stepperRow}>
+                      <TactileButton
+                        onPress={() =>
+                          setDraftSettings((curr) => ({
+                            ...curr,
+                            mouseSensitivity: Math.max(0.5, Math.round((curr.mouseSensitivity - 0.1) * 10) / 10)
+                          }))
+                        }
+                        style={styles.stepperBtn}
+                      >
+                        <Text style={styles.stepperBtnText}>−</Text>
+                      </TactileButton>
+                      <Text style={styles.stepperVal}>{draftSettings.mouseSensitivity.toFixed(1)}x</Text>
+                      <TactileButton
+                        onPress={() =>
+                          setDraftSettings((curr) => ({
+                            ...curr,
+                            mouseSensitivity: Math.min(3.0, Math.round((curr.mouseSensitivity + 0.1) * 10) / 10)
+                          }))
+                        }
+                        style={styles.stepperBtn}
+                      >
+                        <Text style={styles.stepperBtnText}>+</Text>
+                      </TactileButton>
+                    </View>
+                  </View>
+
+                  <View style={styles.groupedDivider} />
+
+                  {/* Scroll Sensitivity */}
+                  <View style={styles.groupedRow}>
+                    <Text style={styles.groupedLabel}>Scroll Sensitivity</Text>
+                    <View style={styles.stepperRow}>
+                      <TactileButton
+                        onPress={() =>
+                          setDraftSettings((curr) => ({
+                            ...curr,
+                            scrollSensitivity: Math.max(0.5, Math.round((curr.scrollSensitivity - 0.1) * 10) / 10)
+                          }))
+                        }
+                        style={styles.stepperBtn}
+                      >
+                        <Text style={styles.stepperBtnText}>−</Text>
+                      </TactileButton>
+                      <Text style={styles.stepperVal}>{draftSettings.scrollSensitivity.toFixed(1)}x</Text>
+                      <TactileButton
+                        onPress={() =>
+                          setDraftSettings((curr) => ({
+                            ...curr,
+                            scrollSensitivity: Math.min(3.0, Math.round((curr.scrollSensitivity + 0.1) * 10) / 10)
+                          }))
+                        }
+                        style={styles.stepperBtn}
+                      >
+                        <Text style={styles.stepperBtnText}>+</Text>
+                      </TactileButton>
+                    </View>
+                  </View>
+
+                  <View style={styles.groupedDivider} />
+
+                  {/* Smooth Acceleration */}
+                  <View style={styles.groupedRow}>
+                    <Text style={styles.groupedLabel}>Smooth Acceleration</Text>
+                    <Switch
+                      value={draftSettings.smoothAcceleration}
+                      onValueChange={(val) => setDraftSettings((curr) => ({ ...curr, smoothAcceleration: val }))}
+                      trackColor={{ false: '#334155', true: '#0a84ff' }}
+                      thumbColor="#ffffff"
+                    />
+                  </View>
+                </View>
+              </View>
+
+              {/* GROUP: SUPPORT */}
+              <View style={styles.modalSection}>
+                <Text style={styles.sectionHeading}>Support</Text>
+                <View style={styles.groupedContainer}>
+                  <TactileButton
+                    onPress={() => {
+                      setSettingsOpen(false);
+                      setBugModalOpen(true);
+                    }}
+                    style={styles.groupedActionRow}
+                  >
+                    <Text style={styles.groupedActionText}>Report a Bug</Text>
+                    <Text style={styles.groupedChevron}>›</Text>
+                  </TactileButton>
+                </View>
+              </View>
+
+              {/* SAVE SETTINGS BUTTON */}
+              <TactileButton
+                onPress={() => {
+                  setSettings(draftSettings);
+                  setSettingsOpen(false);
+                }}
+                style={styles.primaryActionBtn}
+              >
+                <Text style={styles.primaryActionText}>Save Settings</Text>
+              </TactileButton>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* REPORT A BUG / CONNECTION LOGS MODAL */}
+      <Modal
+        visible={bugModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setBugModalOpen(false)}
+      >
+        <View style={styles.sheetBackdrop}>
+          <View style={[styles.sheetContainer, { maxHeight: '88%' }]}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeaderRow}>
+              <View>
+                <Text style={styles.sheetTitle}>Report a Bug</Text>
+                <Text style={styles.sheetSubtitle}>Diagnostic & Connection Logs</Text>
+              </View>
+              <TactileButton onPress={() => setBugModalOpen(false)} style={styles.sheetCloseBtn}>
+                <Text style={styles.sheetCloseText}>✕</Text>
+              </TactileButton>
+            </View>
+
+            <View style={styles.logContainer}>
+              <ScrollView contentContainerStyle={styles.logScrollContent}>
+                {debugLogs.length === 0 ? (
+                  <Text style={styles.logEmptyText}>No diagnostic logs captured yet.</Text>
+                ) : (
+                  debugLogs.map((entry) => (
+                    <View key={entry.id} style={styles.logRow}>
+                      <Text style={styles.logTime}>{entry.ts}</Text>
+                      <Text
+                        style={[
+                          styles.logMsg,
+                          entry.level === 'error'
+                            ? styles.logMsgError
+                            : entry.level === 'warn'
+                              ? styles.logMsgWarn
+                              : styles.logMsgInfo
+                        ]}
+                      >
+                        {entry.level.toUpperCase()} {entry.message}
+                      </Text>
+                      {!!entry.details && <Text style={styles.logDetails}>{entry.details}</Text>}
+                    </View>
+                  ))
+                )}
+              </ScrollView>
+            </View>
+
+            <View style={styles.logFooterRow}>
+              <TactileButton onPress={copyDebugLogs} style={styles.secondaryActionBtn}>
+                <Text style={styles.secondaryActionText}>Copy Logs</Text>
+              </TactileButton>
+              <TactileButton onPress={() => setBugModalOpen(false)} style={styles.primaryActionBtnSmall}>
+                <Text style={styles.primaryActionText}>Done</Text>
+              </TactileButton>
             </View>
           </View>
         </View>
@@ -1006,366 +1201,609 @@ export default function App() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: '#0f172a'
+    backgroundColor: '#07090e'
   },
   safe: {
     flex: 1
   },
   shell: {
     flex: 1,
-    padding: 16,
-    gap: 14
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 12,
+    gap: 10
   },
-  topBar: {
+
+  /* HEADER */
+  header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 8
+    height: 44,
+    paddingHorizontal: 4
   },
-  volumeBar: {
-    flexDirection: 'row',
-    gap: 12
-  },
-  volumeButton: {
-    flex: 1,
-    backgroundColor: '#1e293b',
-    paddingVertical: 10,
-    borderRadius: 14,
+  headerIconBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#131926',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#334155'
+    borderColor: 'rgba(255, 255, 255, 0.08)'
   },
-  volumeButtonText: {
-    color: '#38bdf8',
-    fontSize: 15,
-    fontWeight: '700'
+  headerIconBtnActive: {
+    backgroundColor: 'rgba(10, 132, 255, 0.25)',
+    borderColor: '#0a84ff'
   },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10
-  },
-  title: {
+  headerIconText: {
     color: '#f8fafc',
-    fontSize: 28,
-    fontWeight: '800'
-  },
-  subtitle: {
-    color: '#94a3b8',
-    marginTop: 4
-  },
-  statusPillWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#111827',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999
-  },
-  statusDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5
-  },
-  statusGreen: {
-    backgroundColor: '#22c55e'
-  },
-  statusRed: {
-    backgroundColor: '#ef4444'
-  },
-  statusText: {
-    color: '#e2e8f0',
-    textTransform: 'capitalize'
-  },
-  bugButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#111827',
-    borderWidth: 1,
-    borderColor: '#334155'
-  },
-  bugButtonText: {
     fontSize: 18
   },
-  errorBanner: {
-    color: '#fef2f2',
-    backgroundColor: '#7f1d1d',
-    padding: 10,
-    borderRadius: 12
-  },
-  discoveryCard: {
-    backgroundColor: '#111827',
-    borderRadius: 20,
-    padding: 14,
-    gap: 10,
-    borderWidth: 1,
-    borderColor: '#1e293b'
-  },
-  discoveryHeader: {
+  headerRightActions: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center'
-  },
-  sectionLabel: {
-    color: '#cbd5e1',
-    fontWeight: '700',
-    letterSpacing: 0.5
-  },
-  hintText: {
-    color: '#64748b'
-  },
-  discoveryItem: {
-    backgroundColor: '#0f172a',
-    borderRadius: 14,
-    padding: 12
-  },
-  discoveryItemTitle: {
-    color: '#f8fafc',
-    fontSize: 16,
-    fontWeight: '700'
-  },
-  discoveryItemMeta: {
-    color: '#94a3b8',
-    marginTop: 2
-  },
-  trackpadShell: {
-    flex: 1,
-    borderRadius: 28,
-    backgroundColor: '#172554',
-    borderWidth: 1,
-    borderColor: '#1d4ed8',
-    overflow: 'hidden',
-    justifyContent: 'center',
     alignItems: 'center',
-    minHeight: 280
-  },
-  trackpadRow: {
-    flex: 1,
-    flexDirection: 'row',
-    gap: 12,
-    minHeight: 280
-  },
-  trackpadHint: {
-    color: '#bfdbfe',
-    zIndex: 2
-  },
-  trackpadSubhint: {
-    color: '#93c5fd',
-    zIndex: 2,
-    marginTop: 6,
-    fontSize: 12
-  },
-  trackpadGlow: {
-    position: 'absolute',
-    width: 240,
-    height: 240,
-    borderRadius: 120,
-    backgroundColor: 'rgba(56, 189, 248, 0.18)'
-  },
-  scrollStrip: {
-    width: 54,
-    borderRadius: 24,
-    backgroundColor: '#0f172a',
-    borderWidth: 1,
-    borderColor: '#334155',
-    justifyContent: 'center',
-    alignItems: 'center'
-  },
-  scrollStripLabel: {
-    color: '#cbd5e1',
-    fontWeight: '700',
-    transform: [{ rotate: '-90deg' }],
-    letterSpacing: 0.5
-  },
-  bottomBar: {
-    flexDirection: 'row',
-    gap: 12
-  },
-  dPad: {
     gap: 10
   },
-  dPadRow: {
-    flexDirection: 'row',
-    gap: 10,
-    justifyContent: 'center'
+  statusDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6
   },
-  footer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12
+  statusDotGreen: {
+    backgroundColor: '#34c759',
+    shadowColor: '#34c759',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 6
   },
-  button: {
+  statusDotYellow: {
+    backgroundColor: '#ff9500'
+  },
+  statusDotRed: {
+    backgroundColor: '#ff3b30'
+  },
+
+  /* COMPACT VOLUME CONTROLS */
+  volumeGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 42,
+    backgroundColor: '#121824',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+    overflow: 'hidden'
+  },
+  volumeBtn: {
     flex: 1,
-    backgroundColor: '#38bdf8',
-    paddingVertical: 14,
-    borderRadius: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '100%',
+    gap: 6
+  },
+  volumeBtnIcon: {
+    fontSize: 15
+  },
+  volumeBtnSign: {
+    color: '#94a3b8',
+    fontSize: 16,
+    fontWeight: '600'
+  },
+  volumeDivider: {
+    width: 1,
+    height: '60%',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)'
+  },
+
+  /* ERROR BANNER */
+  errorBanner: {
+    backgroundColor: 'rgba(255, 59, 48, 0.18)',
+    borderWidth: 1,
+    borderColor: '#ff3b30',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8
+  },
+  errorBannerText: {
+    color: '#ff6b6b',
+    fontSize: 13,
+    textAlign: 'center',
+    fontWeight: '500'
+  },
+
+  /* MAIN TRACKPAD SURFACE */
+  trackpadContainer: {
+    flex: 1,
+    minHeight: 260,
+    borderRadius: 24,
+    backgroundColor: '#0c111c',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    overflow: 'hidden',
+    position: 'relative'
+  },
+  trackpadSurface: {
+    flex: 1,
+    width: '100%',
+    height: '100%'
+  },
+  trackpadInnerBorder: {
+    ...StyleSheet.absoluteFillObject,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.03)',
+    borderRadius: 24,
+    pointerEvents: 'none'
+  },
+  integratedScrollStrip: {
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: 42,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderLeftWidth: 1,
+    borderLeftColor: 'rgba(255, 255, 255, 0.05)',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 20
+  },
+  scrollChevron: {
+    color: '#475569',
+    fontSize: 12,
+    fontWeight: '700'
+  },
+  scrollBarLine: {
+    width: 2,
+    height: 40,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 1
+  },
+
+  /* CLICK BAR */
+  clickBar: {
+    flexDirection: 'row',
+    height: 64,
+    backgroundColor: '#121824',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+    overflow: 'hidden'
+  },
+  leftClickBtn: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center'
   },
-  buttonGhost: {
-    backgroundColor: '#0f172a',
+  rightClickBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  clickDivider: {
+    width: 1,
+    height: '60%',
+    alignSelf: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)'
+  },
+  clickIconIndicatorLeft: {
+    width: 24,
+    height: 18,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: '#475569',
+    borderLeftWidth: 3
+  },
+  clickIconIndicatorRight: {
+    width: 24,
+    height: 18,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: '#475569',
+    borderRightWidth: 3
+  },
+
+  /* BOTTOM DIRECTIONAL & KEYBOARD CONTROLS */
+  bottomPadGrid: {
+    flexDirection: 'row',
+    height: 110,
+    gap: 8
+  },
+  dPadLargeBtn: {
+    flex: 1,
+    backgroundColor: '#121824',
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: '#334155'
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4
   },
-  buttonPressed: {
-    opacity: 0.85,
-    transform: [{ scale: 0.99 }]
+  dPadCenterCol: {
+    flex: 1,
+    backgroundColor: '#121824',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+    overflow: 'hidden'
   },
-  buttonText: {
-    color: '#082f49',
-    fontSize: 16,
-    fontWeight: '800'
+  dPadHalfBtnTop: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center'
   },
-  buttonTextGhost: {
-    color: '#e2e8f0'
+  dPadHalfBtnBottom: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center'
   },
+  dPadCenterDivider: {
+    height: 1,
+    width: '70%',
+    alignSelf: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)'
+  },
+  dPadArrowText: {
+    color: '#cbd5e1',
+    fontSize: 18,
+    fontWeight: '600'
+  },
+  dPadSubIcon: {
+    color: '#64748b',
+    fontSize: 13
+  },
+
+  tactilePressed: {
+    backgroundColor: 'rgba(255, 255, 255, 0.06)'
+  },
+
+  /* HIDDEN INPUT */
   hiddenInput: {
     position: 'absolute',
     opacity: 0,
-    height: 1,
     width: 1,
+    height: 1,
     bottom: -1000
   },
-  modalBackdrop: {
+
+  /* MODALS / SHEETS */
+  sheetBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(2, 6, 23, 0.8)',
-    justifyContent: 'center',
-    padding: 20
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'flex-end'
   },
-  modalCard: {
-    backgroundColor: '#0f172a',
-    borderRadius: 24,
-    padding: 20,
-    gap: 14,
+  sheetContainer: {
+    backgroundColor: '#161b26',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    maxHeight: '90%',
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 30,
     borderWidth: 1,
-    borderColor: '#1e293b'
+    borderColor: 'rgba(255, 255, 255, 0.1)'
   },
-  modalTitle: {
-    color: '#f8fafc',
-    fontSize: 22,
-    fontWeight: '800'
+  sheetHandle: {
+    width: 36,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    alignSelf: 'center',
+    marginBottom: 16
   },
-  debugCard: {
-    maxHeight: '85%'
-  },
-  debugHeader: {
+  sheetHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center'
+    alignItems: 'center',
+    marginBottom: 16
   },
-  debugCount: {
-    color: '#94a3b8'
-  },
-  debugActions: {
-    flexDirection: 'row',
-    gap: 12
-  },
-  debugActionButton: {
-    flex: 1,
-    backgroundColor: '#38bdf8',
-    paddingVertical: 12,
-    borderRadius: 14,
-    alignItems: 'center'
-  },
-  debugActionButtonGhost: {
-    backgroundColor: '#0f172a',
-    borderWidth: 1,
-    borderColor: '#334155'
-  },
-  debugActionText: {
-    color: '#082f49',
-    fontWeight: '800'
-  },
-  debugList: {
-    flex: 1,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: '#1f2937',
-    backgroundColor: '#020617',
-    padding: 12
-  },
-  debugEmpty: {
-    color: '#64748b'
-  },
-  debugLogRow: {
-    gap: 4,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1e293b'
-  },
-  debugLogTs: {
-    color: '#64748b',
-    fontSize: 11
-  },
-  debugLogMsg: {
-    color: '#e2e8f0',
-    fontWeight: '700'
-  },
-  debugLogDetails: {
-    color: '#94a3b8'
-  },
-  input: {
-    backgroundColor: '#111827',
+  sheetTitle: {
     color: '#f8fafc',
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    fontSize: 22,
+    fontWeight: '700',
+    letterSpacing: -0.4
+  },
+  sheetSubtitle: {
+    color: '#94a3b8',
+    fontSize: 13,
+    marginTop: 2
+  },
+  sheetCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  sheetCloseText: {
+    color: '#94a3b8',
+    fontSize: 14,
+    fontWeight: '600'
+  },
+  sheetBody: {
+    gap: 20,
+    paddingBottom: 20
+  },
+
+  modalSection: {
+    gap: 8
+  },
+  sectionHeading: {
+    color: '#94a3b8',
+    fontSize: 13,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginLeft: 4
+  },
+
+  /* STATUS CARD */
+  statusCard: {
+    backgroundColor: '#0d111a',
+    borderRadius: 16,
+    padding: 16,
+    gap: 10,
     borderWidth: 1,
-    borderColor: '#334155'
+    borderColor: 'rgba(255, 255, 255, 0.06)'
   },
-  modalActions: {
+  statusRow: {
     flexDirection: 'row',
-    gap: 12
+    alignItems: 'center',
+    gap: 10
   },
-  sliderLabel: {
-    color: '#cbd5e1',
+  statusStateText: {
+    color: '#f8fafc',
+    fontSize: 16,
     fontWeight: '600'
   },
-  stepperContainer: {
-    gap: 6
+  statusHostText: {
+    color: '#94a3b8',
+    fontSize: 14
   },
-  stepperLabel: {
-    color: '#cbd5e1',
+  disconnectBtn: {
+    backgroundColor: 'rgba(255, 59, 48, 0.15)',
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 59, 48, 0.3)'
+  },
+  disconnectBtnText: {
+    color: '#ff6b6b',
     fontWeight: '600'
   },
+
+  /* DISCOVERED PC LIST */
+  emptyCard: {
+    backgroundColor: '#0d111a',
+    borderRadius: 16,
+    padding: 16,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)'
+  },
+  emptyCardText: {
+    color: '#64748b',
+    fontSize: 14,
+    textAlign: 'center'
+  },
+  discoveredRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0d111a',
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)'
+  },
+  discoveredIpText: {
+    color: '#f8fafc',
+    fontSize: 16,
+    fontWeight: '600'
+  },
+  discoveredMetaText: {
+    color: '#64748b',
+    fontSize: 12,
+    marginTop: 2
+  },
+  connectPill: {
+    backgroundColor: '#0a84ff',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20
+  },
+  connectPillText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600'
+  },
+
+  /* MANUAL ENTRY CARD */
+  manualCard: {
+    backgroundColor: '#0d111a',
+    borderRadius: 16,
+    padding: 16,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)'
+  },
+  fieldLabel: {
+    color: '#94a3b8',
+    fontSize: 13,
+    fontWeight: '500'
+  },
+  inputField: {
+    backgroundColor: '#161b26',
+    color: '#f8fafc',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)'
+  },
+  primaryActionBtn: {
+    backgroundColor: '#0a84ff',
+    paddingVertical: 14,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4
+  },
+  primaryActionText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600'
+  },
+
+  /* GROUPED SETTINGS */
+  groupedContainer: {
+    backgroundColor: '#0d111a',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+    overflow: 'hidden'
+  },
+  groupedRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 14
+  },
+  groupedLabel: {
+    color: '#f8fafc',
+    fontSize: 15,
+    fontWeight: '500'
+  },
+  groupedValue: {
+    color: '#94a3b8',
+    fontSize: 14
+  },
+  groupedDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    marginLeft: 16
+  },
+  groupedActionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 14
+  },
+  groupedActionText: {
+    color: '#0a84ff',
+    fontSize: 15,
+    fontWeight: '500'
+  },
+  groupedChevron: {
+    color: '#64748b',
+    fontSize: 18
+  },
+
+  /* STEPPERS */
   stepperRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#111827',
-    borderRadius: 16,
-    padding: 6,
-    borderWidth: 1,
-    borderColor: '#334155'
+    gap: 12,
+    backgroundColor: '#161b26',
+    borderRadius: 10,
+    padding: 4
   },
   stepperBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#222b3d',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  stepperBtnText: {
+    color: '#0a84ff',
+    fontSize: 18,
+    fontWeight: '600'
+  },
+  stepperVal: {
+    color: '#f8fafc',
+    fontSize: 14,
+    fontWeight: '600',
+    minWidth: 32,
+    textAlign: 'center'
+  },
+
+  /* DIAGNOSTIC LOGS */
+  logContainer: {
+    flex: 1,
+    backgroundColor: '#090d14',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    padding: 12,
+    marginVertical: 12
+  },
+  logScrollContent: {
+    gap: 8
+  },
+  logEmptyText: {
+    color: '#64748b',
+    fontSize: 14
+  },
+  logRow: {
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.04)',
+    paddingBottom: 6
+  },
+  logTime: {
+    color: '#475569',
+    fontSize: 11
+  },
+  logMsg: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 2
+  },
+  logMsgInfo: {
+    color: '#cbd5e1'
+  },
+  logMsgWarn: {
+    color: '#ff9500'
+  },
+  logMsgError: {
+    color: '#ff3b30'
+  },
+  logDetails: {
+    color: '#64748b',
+    fontSize: 12,
+    marginTop: 2
+  },
+  logFooterRow: {
+    flexDirection: 'row',
+    gap: 12
+  },
+  secondaryActionBtn: {
+    flex: 1,
     backgroundColor: '#1e293b',
+    paddingVertical: 12,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#334155'
+    borderColor: 'rgba(255, 255, 255, 0.08)'
   },
-  stepperBtnText: {
-    color: '#38bdf8',
-    fontSize: 22,
-    fontWeight: '800'
-  },
-  stepperValueText: {
+  secondaryActionText: {
     color: '#f8fafc',
-    fontSize: 18,
-    fontWeight: '800'
+    fontSize: 15,
+    fontWeight: '600'
   },
-  toggleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center'
+  primaryActionBtnSmall: {
+    flex: 1,
+    backgroundColor: '#0a84ff',
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center'
   }
 });
