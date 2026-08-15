@@ -256,10 +256,10 @@ function createLinuxFallbackController() {
   const scrollAccumulator = createScrollAccumulator(10);
   let pythonChild = null;
 
-  let pyDiagStats = { pythonCmds: 0, coalesced: 0, maxQueue: 0, lastReceivedAt: 0 };
+  let pyDiagStats = { recvMoves: 0, injectedBatches: 0, maxQueue: 0, totalDx: 0, totalDy: 0, lastReceivedAt: 0 };
 
   const pythonScript = `
-import sys, ctypes, select, time
+import sys, os, select, ctypes, time
 
 x11 = None
 xtst = None
@@ -272,152 +272,144 @@ try:
 except Exception:
     display = None
 
-diag_m_cmds = 0
-diag_coalesced = 0
-diag_max_queue = 0
-diag_last_time = time.time()
-
 key_mapping = {
-    'up': 'Up',
-    'down': 'Down',
-    'left': 'Left',
-    'right': 'Right',
-    'backspace': 'BackSpace',
-    'enter': 'Return',
-    'return': 'Return',
-    'space': 'space',
-    'tab': 'Tab',
-    'escape': 'Escape',
-    'esc': 'Escape',
-    'delete': 'Delete',
-    'del': 'Delete',
-    'home': 'Home',
-    'end': 'End',
-    'pageup': 'Page_Up',
-    'pagedown': 'Page_Down'
+    'up': 'Up', 'down': 'Down', 'left': 'Left', 'right': 'Right',
+    'backspace': 'BackSpace', 'enter': 'Return', 'return': 'Return',
+    'space': 'space', 'tab': 'Tab', 'escape': 'Escape', 'esc': 'Escape',
+    'delete': 'Delete', 'del': 'Delete', 'home': 'Home', 'end': 'End',
+    'pageup': 'Page_Up', 'pagedown': 'Page_Down'
 }
 
 def send_key_event(key_str):
     if not display or not key_str:
         return False
     target = key_mapping.get(key_str.lower(), key_str)
-    needs_shift = False
-    if len(target) == 1 and target.isupper():
-        needs_shift = True
-
+    needs_shift = len(target) == 1 and target.isupper()
     keysym = x11.XStringToKeysym(target.encode('utf-8'))
     if not keysym and len(target) == 1:
         keysym = ord(target)
     if not keysym:
         return False
-
     keycode = x11.XKeysymToKeycode(display, keysym)
     if not keycode:
         return False
-
-    shift_keycode = x11.XKeysymToKeycode(display, x11.XStringToKeysym(b'Shift_L')) if needs_shift else 0
-    if needs_shift and shift_keycode:
-        xtst.XTestFakeKeyEvent(display, shift_keycode, True, 0)
+    shift_kc = x11.XKeysymToKeycode(display, x11.XStringToKeysym(b'Shift_L')) if needs_shift else 0
+    if needs_shift and shift_kc:
+        xtst.XTestFakeKeyEvent(display, shift_kc, True, 0)
     xtst.XTestFakeKeyEvent(display, keycode, True, 0)
     xtst.XTestFakeKeyEvent(display, keycode, False, 0)
-    if needs_shift and shift_keycode:
-        xtst.XTestFakeKeyEvent(display, shift_keycode, False, 0)
+    if needs_shift and shift_kc:
+        xtst.XTestFakeKeyEvent(display, shift_kc, False, 0)
     x11.XFlush(display)
     return True
 
+stdin_fd = sys.stdin.fileno()
+buffer = ""
+
+diag_recv_moves = 0
+diag_injected_batches = 0
+diag_max_queue = 0
+diag_total_dx = 0
+diag_total_dy = 0
+diag_last_time = time.time()
+
 while True:
-    line = sys.stdin.readline()
-    if not line:
+    try:
+        chunk = os.read(stdin_fd, 8192).decode('utf-8', errors='ignore')
+    except Exception:
         break
-    line_clean = line.rstrip('\\r\\n')
-    if not line_clean:
+    if not chunk:
+        break
+
+    buffer += chunk
+    if '\\n' not in buffer:
         continue
-    parts = line_clean.split(' ', 1)
-    cmd = parts[0]
-    arg = parts[1] if len(parts) > 1 else ''
 
-    if cmd == 'M' and display:
-        m_parts = arg.split()
-        if len(m_parts) >= 2:
-            diag_m_cmds += 1
-            tot_dx = int(m_parts[0])
-            tot_dy = int(m_parts[1])
-            batch_count = 1
-            while select.select([sys.stdin], [], [], 0)[0]:
-                nxt_line = sys.stdin.readline()
-                if not nxt_line:
-                    break
-                nxt_clean = nxt_line.rstrip('\\r\\n')
-                if not nxt_clean:
-                    continue
-                nxt_parts = nxt_clean.split(' ', 1)
-                if nxt_parts[0] == 'M':
-                    sub_parts = nxt_parts[1].split() if len(nxt_parts) > 1 else []
-                    if len(sub_parts) >= 2:
-                        diag_m_cmds += 1
-                        batch_count += 1
-                        tot_dx += int(sub_parts[0])
-                        tot_dy += int(sub_parts[1])
-                else:
-                    if tot_dx != 0 or tot_dy != 0:
-                        x11.XWarpPointer(display, 0, 0, 0, 0, 0, 0, tot_dx, tot_dy)
-                        x11.XFlush(display)
-                        tot_dx, tot_dy = 0, 0
-                    line_clean = nxt_clean
-                    parts = nxt_parts
-                    cmd = parts[0]
-                    arg = parts[1] if len(parts) > 1 else ''
-                    break
+    lines = buffer.split('\\n')
+    buffer = lines[-1]
+    complete_lines = lines[:-1]
 
-            if batch_count > 1:
-                diag_coalesced += (batch_count - 1)
-                if batch_count > diag_max_queue:
-                    diag_max_queue = batch_count
+    batch_dx = 0
+    batch_dy = 0
+    batch_move_count = 0
 
-            if tot_dx != 0 or tot_dy != 0:
-                x11.XWarpPointer(display, 0, 0, 0, 0, 0, 0, tot_dx, tot_dy)
+    for line in complete_lines:
+        line_clean = line.strip()
+        if not line_clean:
+            continue
+        parts = line_clean.split(' ', 1)
+        cmd = parts[0]
+        arg = parts[1] if len(parts) > 1 else ''
+
+        if cmd == 'M' and display:
+            m_parts = arg.split()
+            if len(m_parts) >= 2:
+                dx, dy = int(m_parts[0]), int(m_parts[1])
+                batch_dx += dx
+                batch_dy += dy
+                batch_move_count += 1
+                diag_recv_moves += 1
+                diag_total_dx += abs(dx)
+                diag_total_dy += abs(dy)
+        else:
+            if batch_dx != 0 or batch_dy != 0:
+                x11.XWarpPointer(display, 0, 0, 0, 0, 0, 0, batch_dx, batch_dy)
                 x11.XFlush(display)
+                diag_injected_batches += 1
+                if batch_move_count > diag_max_queue:
+                    diag_max_queue = batch_move_count
+                batch_dx, batch_dy, batch_move_count = 0, 0, 0
 
-    if cmd == 'C' and display:
-        btn_name = arg.strip()
-        btn = 3 if btn_name == 'right' else 1
-        xtst.XTestFakeButtonEvent(display, btn, True, 0)
-        xtst.XTestFakeButtonEvent(display, btn, False, 0)
+            if cmd == 'C' and display:
+                btn_name = arg.strip()
+                btn = 3 if btn_name == 'right' else 1
+                xtst.XTestFakeButtonEvent(display, btn, True, 0)
+                xtst.XTestFakeButtonEvent(display, btn, False, 0)
+                x11.XFlush(display)
+            elif cmd == 'S' and display:
+                delta = int(arg.strip())
+                btn = 5 if delta >= 0 else 4
+                amount = max(1, abs(delta))
+                for _ in range(amount):
+                    xtst.XTestFakeButtonEvent(display, btn, True, 0)
+                    xtst.XTestFakeButtonEvent(display, btn, False, 0)
+                x11.XFlush(display)
+            elif cmd == 'D' and display:
+                d_parts = arg.split()
+                if len(d_parts) >= 2:
+                    active = d_parts[0] == '1'
+                    btn_name = d_parts[1]
+                    btn = 3 if btn_name == 'right' else 1
+                    xtst.XTestFakeButtonEvent(display, btn, active, 0)
+                    x11.XFlush(display)
+            elif cmd == 'K' and display:
+                send_key_event(arg.strip())
+            elif cmd == 'T' and display:
+                for char in arg:
+                    send_key_event(char)
+            elif cmd == 'V' and display:
+                act = arg.strip().lower()
+                key_name = 'XF86AudioRaiseVolume' if act == 'up' else 'XF86AudioLowerVolume'
+                send_key_event(key_name)
+
+    if batch_dx != 0 or batch_dy != 0:
+        x11.XWarpPointer(display, 0, 0, 0, 0, 0, 0, batch_dx, batch_dy)
         x11.XFlush(display)
-    elif cmd == 'S' and display:
-        delta = int(arg.strip())
-        btn = 5 if delta >= 0 else 4
-        amount = max(1, abs(delta))
-        for _ in range(amount):
-            xtst.XTestFakeButtonEvent(display, btn, True, 0)
-            xtst.XTestFakeButtonEvent(display, btn, False, 0)
-        x11.XFlush(display)
-    elif cmd == 'D' and display:
-        d_parts = arg.split()
-        if len(d_parts) >= 2:
-            active = d_parts[0] == '1'
-            btn_name = d_parts[1]
-            btn = 3 if btn_name == 'right' else 1
-            xtst.XTestFakeButtonEvent(display, btn, active, 0)
-            x11.XFlush(display)
-    elif cmd == 'K' and display:
-        send_key_event(arg.strip())
-    elif cmd == 'T' and display:
-        for char in arg:
-            send_key_event(char)
-    elif cmd == 'V' and display:
-        act = arg.strip().lower()
-        key_name = 'XF86AudioRaiseVolume' if act == 'up' else 'XF86AudioLowerVolume'
-        send_key_event(key_name)
+        diag_injected_batches += 1
+        if batch_move_count > diag_max_queue:
+            diag_max_queue = batch_move_count
+        batch_dx, batch_dy, batch_move_count = 0, 0, 0
 
     now = time.time()
     if now - diag_last_time >= 1.0:
-        if diag_m_cmds > 0:
-            sys.stdout.write(f"PDIAG {diag_m_cmds} {diag_coalesced} {diag_max_queue}\\n")
+        if diag_recv_moves > 0:
+            sys.stdout.write(f"PDIAG {diag_recv_moves} {diag_injected_batches} {diag_max_queue} {diag_total_dx} {diag_total_dy}\\n")
             sys.stdout.flush()
-        diag_m_cmds = 0
-        diag_coalesced = 0
+        diag_recv_moves = 0
+        diag_injected_batches = 0
         diag_max_queue = 0
+        diag_total_dx = 0
+        diag_total_dy = 0
         diag_last_time = now
 `;
 
@@ -432,11 +424,13 @@ while True:
         for (const l of lines) {
           if (l.startsWith('PDIAG')) {
             const parts = l.split(' ');
-            if (parts.length >= 4) {
+            if (parts.length >= 6) {
               pyDiagStats = {
-                pythonCmds: Number(parts[1]) || 0,
-                coalesced: Number(parts[2]) || 0,
+                recvMoves: Number(parts[1]) || 0,
+                injectedBatches: Number(parts[2]) || 0,
                 maxQueue: Number(parts[3]) || 0,
+                totalDx: Number(parts[4]) || 0,
+                totalDy: Number(parts[5]) || 0,
                 lastReceivedAt: Date.now()
               };
             }

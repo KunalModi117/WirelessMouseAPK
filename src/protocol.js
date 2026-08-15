@@ -68,11 +68,15 @@ function createCommandRouter({ mouseController, state }) {
         const pyStats = typeof mouseController.getDiagStats === 'function' ? mouseController.getDiagStats() : {};
         const avgMs = (diagTotalTimeMs / diagServerMoves).toFixed(2);
         const maxMs = diagMaxTimeMs.toFixed(2);
-        const pythonCmds = pyStats.pythonCmds || diagServerMoves;
-        const coalesced = pyStats.coalesced || 0;
-        const maxQueue = pyStats.maxQueue || 1;
 
-        console.log(`[MOUSE-DIAG-SERVER]\n  Server moves/sec: ${diagServerMoves}\n  Python cmds/sec: ${pythonCmds}\n  Coalesced moves: ${coalesced}\n  IPC queue depth (max batch): ${maxQueue}\n  Avg processing time: ${avgMs}ms\n  Max processing time: ${maxMs}ms\n`);
+        const pyRecv = pyStats.recvMoves || diagServerMoves;
+        const injectedBatches = pyStats.injectedBatches || pyRecv;
+        const maxQueue = pyStats.maxQueue || 1;
+        const coalesced = Math.max(0, pyRecv - injectedBatches);
+        const totDx = pyStats.totalDx || 0;
+        const totDy = pyStats.totalDy || 0;
+
+        console.log(`[MOUSE-DIAG-SERVER]\n  Server moves received: ${diagServerMoves}/s\n  Python cmds received: ${pyRecv}/s\n  Injected X11 batches: ${injectedBatches}/s\n  Coalesced moves: ${coalesced}\n  Max IPC queue depth: ${maxQueue}\n  Delta preserved (sum |dx|,|dy|): (${totDx}, ${totDy})\n  Avg processing time: ${avgMs}ms\n  Max processing time: ${maxMs}ms\n`);
       }
       diagServerMoves = 0;
       diagTotalTimeMs = 0;
