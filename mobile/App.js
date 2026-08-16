@@ -130,6 +130,66 @@ function normalizeDiscoveredTarget(payload, fallbackAddress) {
   };
 }
 
+async function detectLocalSubnetPrefixes(activeTargetIp = '', manualDraftIp = '') {
+  const prefixes = new Set();
+
+  [activeTargetIp, manualDraftIp].forEach((ipStr) => {
+    if (ipStr && typeof ipStr === 'string') {
+      const trimmed = ipStr.trim();
+      const parts = trimmed.split('.');
+      if (parts.length === 4 && parts[0] !== '127') {
+        prefixes.add(`${parts[0]}.${parts[1]}.${parts[2]}`);
+      }
+    }
+  });
+
+  try {
+    const PeerConn = globalThis.RTCPeerConnection || globalThis.webkitRTCPeerConnection;
+    if (PeerConn) {
+      await new Promise((resolve) => {
+        let settled = false;
+        let pc = null;
+        const finish = () => {
+          if (!settled) {
+            settled = true;
+            if (pc) {
+              try { pc.close(); } catch (_) {}
+            }
+            resolve();
+          }
+        };
+        setTimeout(finish, 600);
+        try {
+          pc = new PeerConn({ iceServers: [] });
+          pc.createDataChannel('');
+          pc.onicecandidate = (evt) => {
+            if (!evt || !evt.candidate) {
+              finish();
+              return;
+            }
+            const candStr = evt.candidate.candidate || '';
+            const match = candStr.match(/([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})/);
+            if (match && match[1] && !match[1].startsWith('127.')) {
+              const parts = match[1].split('.');
+              if (parts.length === 4) {
+                prefixes.add(`${parts[0]}.${parts[1]}.${parts[2]}`);
+              }
+            }
+          };
+          pc.createOffer().then((offer) => pc.setLocalDescription(offer)).catch(finish);
+        } catch (_) {
+          finish();
+        }
+      });
+    }
+  } catch (_) {}
+
+  const defaultSubnets = ['192.168.1', '192.168.0', '192.168.2', '10.0.0', '10.0.2', '172.16.0', '192.168.50'];
+  defaultSubnets.forEach((prefix) => prefixes.add(prefix));
+
+  return Array.from(prefixes);
+}
+
 /**
  * Reusable Tactile Button following Apple design principles:
  * Instant touch-down feedback, critically damped scaling, and strong visual feedback.
@@ -237,18 +297,18 @@ export default function App() {
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(settings)).catch(() => {});
   }, [settings]);
 
-  // Subnet Scanning HTTP Discovery for local Wi-Fi
+  // Subnet Scanning HTTP Discovery for local Wi-Fi (Phase 2A & 2B Dynamic Subnet Scan)
   useEffect(() => {
     if (!discoveryEnabled || manualMode) {
       return;
     }
     let isCancelled = false;
-    addDebugLog('info', 'Subnet scanning started', 'Scanning 41235/health on local subnets');
 
     const scanSubnets = async () => {
-      const subnets = ['192.168.1', '192.168.0', '192.168.2', '10.0.0', '10.0.2'];
-      const candidateIps = ['127.0.0.1', '10.0.2.2'];
+      const subnets = await detectLocalSubnetPrefixes(target?.ip, manualDraft?.ip);
+      addDebugLog('info', 'Dynamic subnet scan started', `Subnets: ${subnets.join(', ')}`);
 
+      const candidateIps = ['127.0.0.1', '10.0.2.2'];
       for (const prefix of subnets) {
         for (let i = 1; i <= 254; i++) {
           candidateIps.push(`${prefix}.${i}`);
@@ -256,7 +316,7 @@ export default function App() {
       }
 
       const foundList = [];
-      const batchSize = 25;
+      const batchSize = 50;
 
       for (let i = 0; i < candidateIps.length; i += batchSize) {
         if (isCancelled) break;
@@ -265,7 +325,7 @@ export default function App() {
           batch.map(async (ip) => {
             try {
               const controller = new AbortController();
-              const timer = setTimeout(() => controller.abort(), 1200);
+              const timer = setTimeout(() => controller.abort(), 700);
               const res = await fetch(`http://${ip}:41235/health`, {
                 signal: controller.signal
               });
@@ -278,7 +338,11 @@ export default function App() {
                     foundList.push(targetObj);
                     if (!isCancelled) {
                       setDiscovered([...foundList]);
-                      addDebugLog('info', 'Discovered PC server', `${targetObj.ip}:${targetObj.wsPort}`);
+                      addDebugLog(
+                        'info',
+                        'Discovered PC server',
+                        `${targetObj.host ? `${targetObj.host} (${targetObj.ip})` : targetObj.ip}:${targetObj.wsPort}`
+                      );
                     }
                   }
                 }
@@ -296,7 +360,7 @@ export default function App() {
       isCancelled = true;
       clearInterval(interval);
     };
-  }, [discoveryEnabled, manualMode]);
+  }, [discoveryEnabled, manualMode, target?.ip]);
 
   useEffect(() => {
     return () => {
