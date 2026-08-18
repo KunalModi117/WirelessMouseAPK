@@ -297,16 +297,16 @@ export default function App() {
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(settings)).catch(() => {});
   }, [settings]);
 
-  // Subnet Scanning HTTP Discovery for local Wi-Fi (Phase 2A & 2B Dynamic Subnet Scan)
+  // Subnet Scanning HTTP Discovery for local Wi-Fi (Phase 2A & 2B Dynamic Subnet Scan + Diagnostics)
   useEffect(() => {
     if (!discoveryEnabled || manualMode) {
       return;
     }
     let isCancelled = false;
+    let hasRunDiagnosticProbe = false;
 
     const scanSubnets = async () => {
       const subnets = await detectLocalSubnetPrefixes(target?.ip, manualDraft?.ip);
-      addDebugLog('info', 'Dynamic subnet scan started', `Subnets: ${subnets.join(', ')}`);
 
       const candidateIps = ['127.0.0.1', '10.0.2.2'];
       for (const prefix of subnets) {
@@ -315,14 +315,84 @@ export default function App() {
         }
       }
 
+      const derivedRangeStr = subnets.length > 0 ? `${subnets[0]}.1 - ${subnets[0]}.254` : 'UNKNOWN';
+      const targetDiagnosticIncluded = candidateIps.includes('10.80.244.114');
+
+      addDebugLog(
+        'info',
+        '[MOUSE-DISCOVERY]',
+        `Phone local IP: UNKNOWN\n` +
+          `Phone subnet: ${subnets[0] || 'UNKNOWN'}\n` +
+          `Subnet mask: UNKNOWN\n` +
+          `Gateway: UNKNOWN\n` +
+          `Network interface: UNKNOWN\n` +
+          `Derived scan range: ${derivedRangeStr}\n` +
+          `Number of candidate addresses: ${candidateIps.length}`
+      );
+
+      addDebugLog(
+        'info',
+        '[MOUSE-DISCOVERY-VERIFY]',
+        `Target diagnostic IP included: ${targetDiagnosticIncluded ? 'YES' : 'NO'}`
+      );
+
+      // Targeted diagnostic probe to 10.80.244.114 for debugging
+      if (!hasRunDiagnosticProbe) {
+        hasRunDiagnosticProbe = true;
+        (async () => {
+          const probeUrl = 'http://10.80.244.114:41235/health';
+          const startTime = Date.now();
+          addDebugLog('info', 'Direct diagnostic probe', `URL: ${probeUrl} | Started: ${new Date(startTime).toISOString()}`);
+          try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 3000);
+            const res = await fetch(probeUrl, { signal: controller.signal });
+            clearTimeout(timer);
+            const elapsed = Date.now() - startTime;
+            const text = await res.text();
+            let json = null;
+            try { json = JSON.parse(text); } catch (_) {}
+            addDebugLog(
+              'info',
+              'Direct diagnostic probe result',
+              `Response received: YES | HTTP status: ${res.status} | Elapsed ms: ${elapsed} | Raw text: ${text}`
+            );
+          } catch (err) {
+            const elapsed = Date.now() - startTime;
+            addDebugLog(
+              'error',
+              'Direct diagnostic probe result',
+              `Response received: NO | Elapsed ms: ${elapsed} | Error: ${err?.name || 'Error'}: ${err?.message || String(err)}`
+            );
+          }
+        })();
+      }
+
+      const counters = {
+        candidates: candidateIps.length,
+        started: 0,
+        completed: 0,
+        timeouts: 0,
+        failed: 0,
+        httpResponses: 0,
+        http200: 0,
+        validServers: 0,
+        otherHttp: 0,
+        aborted: 0
+      };
+
       const foundList = [];
       const batchSize = 50;
 
       for (let i = 0; i < candidateIps.length; i += batchSize) {
-        if (isCancelled) break;
+        if (isCancelled) {
+          counters.aborted += candidateIps.length - i;
+          break;
+        }
         const batch = candidateIps.slice(i, i + batchSize);
         await Promise.all(
           batch.map(async (ip) => {
+            counters.started += 1;
             try {
               const controller = new AbortController();
               const timer = setTimeout(() => controller.abort(), 700);
@@ -330,9 +400,20 @@ export default function App() {
                 signal: controller.signal
               });
               clearTimeout(timer);
+              counters.completed += 1;
+              counters.httpResponses += 1;
+
+              if (res.status === 200) {
+                counters.http200 += 1;
+              } else {
+                counters.otherHttp += 1;
+              }
+
               if (res.ok) {
                 const data = await res.json();
+                addDebugLog('info', 'Raw /health payload received', `IP ${ip}: ${JSON.stringify(data)}`);
                 if (data && data.app === 'WirelessMouseKeyboardRemote') {
+                  counters.validServers += 1;
                   const targetObj = normalizeDiscoveredTarget(data, ip);
                   if (!foundList.some((item) => item.ip === targetObj.ip)) {
                     foundList.push(targetObj);
@@ -347,10 +428,23 @@ export default function App() {
                   }
                 }
               }
-            } catch (_) {}
+            } catch (err) {
+              counters.completed += 1;
+              if (err && err.name === 'AbortError') {
+                counters.timeouts += 1;
+              } else {
+                counters.failed += 1;
+              }
+            }
           })
         );
       }
+
+      addDebugLog(
+        'info',
+        '[MOUSE-DISCOVERY-RESULT]',
+        `Candidates: ${counters.candidates} | Started: ${counters.started} | Completed: ${counters.completed} | Timeouts: ${counters.timeouts} | Failed: ${counters.failed} | HTTP responses: ${counters.httpResponses} | HTTP 200: ${counters.http200} | Valid servers: ${counters.validServers} | Other HTTP: ${counters.otherHttp} | Aborted: ${counters.aborted}`
+      );
     };
 
     scanSubnets();
