@@ -13,12 +13,35 @@ import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.NetworkInterface
 import java.net.SocketTimeoutException
 
 class UdpDiscoveryModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
 
     override fun getName(): String {
         return "UdpDiscoveryModule"
+    }
+
+    private fun getBroadcastAddresses(): List<InetAddress> {
+        val addresses = mutableSetOf<InetAddress>()
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            if (interfaces != null) {
+                for (netInterface in interfaces) {
+                    if (!netInterface.isUp || netInterface.isLoopback) continue
+                    for (interfaceAddress in netInterface.interfaceAddresses) {
+                        val broadcast = interfaceAddress.broadcast
+                        if (broadcast != null) {
+                            addresses.add(broadcast)
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        try {
+            addresses.add(InetAddress.getByName("255.255.255.255"))
+        } catch (_: Exception) {}
+        return addresses.toList()
     }
 
     @ReactMethod
@@ -39,9 +62,14 @@ class UdpDiscoveryModule(reactContext: ReactApplicationContext) : ReactContextBa
                 socket.soTimeout = timeoutMs
 
                 val requestData = "WM_DISCOVER_V1".toByteArray(Charsets.UTF_8)
-                val broadcastAddr = InetAddress.getByName("255.255.255.255")
-                val sendPacket = DatagramPacket(requestData, requestData.size, broadcastAddr, discoveryPort)
-                socket.send(sendPacket)
+                val targetAddrs = getBroadcastAddresses()
+
+                for (targetAddr in targetAddrs) {
+                    try {
+                        val sendPacket = DatagramPacket(requestData, requestData.size, targetAddr, discoveryPort)
+                        socket.send(sendPacket)
+                    } catch (_: Exception) {}
+                }
 
                 val results: WritableArray = Arguments.createArray()
                 val seenDevices = HashSet<String>()

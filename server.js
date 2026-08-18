@@ -75,6 +75,24 @@ function getPrimaryIPv4() {
   return '127.0.0.1';
 }
 
+function getBroadcastAddresses() {
+  const addresses = new Set(['255.255.255.255']);
+  try {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const entry of interfaces[name] || []) {
+        if (entry.family === 'IPv4' && !entry.internal) {
+          const ipParts = entry.address.split('.').map(Number);
+          const netmaskParts = entry.netmask.split('.').map(Number);
+          const broadcastParts = ipParts.map((ip, i) => (ip | (~netmaskParts[i] & 255)));
+          addresses.add(broadcastParts.join('.'));
+        }
+      }
+    }
+  } catch (_) {}
+  return Array.from(addresses);
+}
+
 function createUdpDiscoveryServer(deviceId) {
   const socket = dgram.createSocket('udp4');
 
@@ -108,11 +126,37 @@ function createUdpDiscoveryServer(deviceId) {
   });
 
   socket.bind(PORTS.udpDiscovery, '0.0.0.0', () => {
+    try {
+      socket.setBroadcast(true);
+    } catch (_) {}
     console.log(`[DISCOVERY-SERVER] UDP discovery server listening on 0.0.0.0:${PORTS.udpDiscovery}`);
   });
 
+  // SECONDARY: PC Discovery Beacon (PC -> Mobile)
+  const sendBeacon = () => {
+    const beaconPayload = JSON.stringify({
+      type: 'wifi-mouse-discovery',
+      version: 1,
+      deviceId: deviceId,
+      name: os.hostname(),
+      host: os.hostname(),
+      platform: os.platform(),
+      httpPort: PORTS.http,
+      wsPort: PORTS.http
+    });
+    const buf = Buffer.from(beaconPayload);
+    const targets = getBroadcastAddresses();
+    targets.forEach((broadcastIp) => {
+      socket.send(buf, 0, buf.length, PORTS.udpDiscovery, broadcastIp, () => {});
+    });
+  };
+
+  const beaconInterval = setInterval(sendBeacon, DISCOVERY_INTERVAL_MS);
+  sendBeacon();
+
   return {
     close() {
+      try { clearInterval(beaconInterval); } catch (_) {}
       try { socket.close(); } catch (_) {}
     }
   };
