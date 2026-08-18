@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const http = require('http');
 const os = require('os');
 const dgram = require('dgram');
@@ -27,6 +29,40 @@ const serverState = {
   moveThrottleMs: MOVE_THROTTLE_MS
 };
 
+function getConfigDir() {
+  const home = os.homedir();
+  const platform = os.platform();
+  if (platform === 'win32') {
+    return process.env.APPDATA || path.join(home, 'AppData', 'Roaming', 'wireless-mouse-remote');
+  } else if (platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', 'wireless-mouse-remote');
+  } else {
+    const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
+    return path.join(xdgConfig, 'wireless-mouse-remote');
+  }
+}
+
+function getOrCreateDeviceId() {
+  try {
+    const configDir = getConfigDir();
+    const filePath = path.join(configDir, 'device-id.json');
+    if (fs.existsSync(filePath)) {
+      const content = fs.readFileSync(filePath, 'utf8');
+      const data = JSON.parse(content);
+      if (data && data.deviceId) {
+        return data.deviceId;
+      }
+    }
+    fs.mkdirSync(configDir, { recursive: true });
+    const newId = `device-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    fs.writeFileSync(filePath, JSON.stringify({ deviceId: newId, createdAt: new Date().toISOString() }, null, 2), 'utf8');
+    return newId;
+  } catch (err) {
+    console.warn('[device-id] failed to read/write config file, using fallback id:', err.message);
+    return `device-fallback-${os.hostname()}`;
+  }
+}
+
 function getPrimaryIPv4() {
   const interfaces = os.networkInterfaces();
   for (const name of Object.keys(interfaces)) {
@@ -39,43 +75,45 @@ function getPrimaryIPv4() {
   return '127.0.0.1';
 }
 
-function buildDiscoveryPayload() {
-  return JSON.stringify({
-    type: 'discover',
-    app: APP_NAME,
-    version: VERSION,
-    host: os.hostname(),
-    ip: getPrimaryIPv4(),
-    httpPort: PORTS.http,
-    udpMovePort: PORTS.udpMove,
-    udpDiscoveryPort: PORTS.udpDiscovery,
-    timestamp: Date.now()
-  });
-}
-
-function createDiscoveryBroadcaster() {
+function createUdpDiscoveryServer(deviceId) {
   const socket = dgram.createSocket('udp4');
-  socket.bind(() => {
-    socket.setBroadcast(true);
-  });
 
-  const sendBroadcast = () => {
-    const payload = Buffer.from(buildDiscoveryPayload());
-    socket.send(payload, 0, payload.length, PORTS.udpDiscovery, '255.255.255.255', (err) => {
-      serverState.lastDiscoverySentAt = new Date().toISOString();
+  socket.on('message', (msg, rinfo) => {
+    const raw = msg.toString('utf8').trim();
+    console.log(`[DISCOVERY-SERVER] Request received: "${raw}" from ${rinfo.address}:${rinfo.port}`);
+
+    const responsePayload = JSON.stringify({
+      type: 'wifi-mouse-discovery',
+      version: 1,
+      deviceId: deviceId,
+      name: os.hostname(),
+      host: os.hostname(),
+      platform: os.platform(),
+      httpPort: PORTS.http,
+      wsPort: PORTS.http
+    });
+
+    const buf = Buffer.from(responsePayload);
+    socket.send(buf, 0, buf.length, rinfo.port, rinfo.address, (err) => {
       if (err) {
-        console.warn('[discovery] broadcast failed:', err.message);
+        console.warn(`[DISCOVERY-SERVER] Send error to ${rinfo.address}:${rinfo.port}:`, err.message);
+      } else {
+        console.log(`[DISCOVERY-SERVER] Response sent to ${rinfo.address}:${rinfo.port} | Device ID: ${deviceId} | Platform: ${os.platform()}`);
       }
     });
-  };
+  });
 
-  const interval = setInterval(sendBroadcast, DISCOVERY_INTERVAL_MS);
-  sendBroadcast();
+  socket.on('error', (err) => {
+    console.error('[DISCOVERY-SERVER] Listener error:', err.message);
+  });
+
+  socket.bind(PORTS.udpDiscovery, '0.0.0.0', () => {
+    console.log(`[DISCOVERY-SERVER] UDP discovery server listening on 0.0.0.0:${PORTS.udpDiscovery}`);
+  });
 
   return {
     close() {
-      clearInterval(interval);
-      socket.close();
+      try { socket.close(); } catch (_) {}
     }
   };
 }
@@ -137,6 +175,9 @@ function createHeartbeat(ws, socketId) {
 }
 
 async function main() {
+  const deviceId = getOrCreateDeviceId();
+  console.log(`[device] Stable Device ID: ${deviceId}`);
+
   const mouseController = createMouseController();
   console.log(`[mouse] Active controller backend: ${mouseController.backendName || 'Default'}`);
 
@@ -152,11 +193,16 @@ async function main() {
         ok: true,
         app: APP_NAME,
         version: VERSION,
+        deviceId: deviceId,
+        host: os.hostname(),
+        platform: os.platform(),
         startedAt: serverState.startedAt,
         discoveryLastSentAt: serverState.lastDiscoverySentAt,
         clients: serverState.clients.size,
-        host: os.hostname(),
-        platform: os.platform()
+        httpPort: PORTS.http,
+        wsPort: PORTS.http,
+        udpMovePort: PORTS.udpMove,
+        udpDiscoveryPort: PORTS.udpDiscovery
       }));
       return;
     }
@@ -165,6 +211,7 @@ async function main() {
     res.end(JSON.stringify({
       app: APP_NAME,
       version: VERSION,
+      deviceId: deviceId,
       status: 'running',
       endpoints: {
         ws: `ws://${getPrimaryIPv4()}:${PORTS.http}`,
@@ -174,7 +221,7 @@ async function main() {
     }));
   });
 
-  const discovery = createDiscoveryBroadcaster();
+  const discovery = createUdpDiscoveryServer(deviceId);
   const udpListener = createUdpMoveListener(router);
 
   attachWebSocketServer(httpServer, {
@@ -187,8 +234,10 @@ async function main() {
       type: 'welcome',
       app: APP_NAME,
       version: VERSION,
+      deviceId: deviceId,
       serverIp: getPrimaryIPv4(),
       httpPort: PORTS.http,
+      wsPort: PORTS.http,
       udpMovePort: PORTS.udpMove,
       udpDiscoveryPort: PORTS.udpDiscovery,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,

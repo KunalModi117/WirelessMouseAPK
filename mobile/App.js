@@ -4,6 +4,7 @@ import {
   Alert,
   Keyboard,
   Modal,
+  NativeModules,
   PanResponder,
   Pressable,
   ScrollView,
@@ -95,7 +96,8 @@ async function safeParseLastTarget() {
       udpMovePort: String(parsed.udpMovePort || '41236'),
       discoveryPort: String(parsed.discoveryPort || '41234'),
       host: parsed.host ? String(parsed.host) : '',
-      platform: parsed.platform ? String(parsed.platform) : ''
+      platform: parsed.platform ? String(parsed.platform) : '',
+      deviceId: parsed.deviceId ? String(parsed.deviceId) : ''
     };
   } catch (_) {
     return null;
@@ -113,7 +115,8 @@ async function safeSaveLastTarget(targetObj) {
         udpMovePort: targetObj.udpMovePort || '41236',
         discoveryPort: targetObj.discoveryPort || '41234',
         host: targetObj.host || '',
-        platform: targetObj.platform || ''
+        platform: targetObj.platform || '',
+        deviceId: targetObj.deviceId || ''
       })
     );
   } catch (_) {}
@@ -122,12 +125,97 @@ async function safeSaveLastTarget(targetObj) {
 function normalizeDiscoveredTarget(payload, fallbackAddress) {
   return {
     ip: payload.ip || fallbackAddress,
-    wsPort: String(payload.httpPort || 41235),
+    wsPort: String(payload.httpPort || payload.wsPort || 41235),
     udpMovePort: String(payload.udpMovePort || 41236),
-    discoveryPort: String(payload.udpDiscoveryPort || 41234),
-    host: payload.host || '',
-    platform: payload.platform || ''
+    discoveryPort: String(payload.udpDiscoveryPort || payload.discoveryPort || 41234),
+    host: payload.host || payload.name || '',
+    platform: payload.platform || '',
+    deviceId: payload.deviceId || ''
   };
+}
+
+async function runUdpDiscovery(logFn) {
+  const startTime = Date.now();
+  if (logFn) logFn('info', '[MOUSE-DISCOVERY]', `Mode: UDP | Started: ${new Date(startTime).toISOString()}`);
+
+  const { UdpDiscoveryModule } = NativeModules;
+  if (!UdpDiscoveryModule || typeof UdpDiscoveryModule.discoverServers !== 'function') {
+    if (logFn) logFn('warn', '[MOUSE-DISCOVERY]', 'Mode: UDP | Native UdpDiscoveryModule unavailable. Falling back.');
+    return { success: false, servers: [], mode: 'UDP_UNAVAILABLE' };
+  }
+
+  try {
+    const rawResults = await UdpDiscoveryModule.discoverServers(41234, 1500);
+    const discoveryElapsed = Date.now() - startTime;
+    const rawCount = Array.isArray(rawResults) ? rawResults.length : 0;
+
+    if (logFn) logFn('info', '[MOUSE-DISCOVERY]', `Responses: ${rawCount} raw UDP responses in ${discoveryElapsed}ms`);
+
+    if (!Array.isArray(rawResults) || rawResults.length === 0) {
+      return { success: false, servers: [], mode: 'UDP_NO_RESPONSES' };
+    }
+
+    const validServers = [];
+    const seenDeviceIds = new Set();
+
+    await Promise.all(
+      rawResults.map(async (raw) => {
+        const candidateIp = raw.ip;
+        if (!candidateIp) return;
+
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 1000);
+          const res = await fetch(`http://${candidateIp}:${raw.httpPort || raw.port || 41235}/health`, {
+            signal: controller.signal
+          });
+          clearTimeout(timer);
+
+          if (res.ok) {
+            const healthData = await res.json();
+            if (healthData && healthData.app === 'WirelessMouseKeyboardRemote') {
+              const deviceId = healthData.deviceId || raw.deviceId || candidateIp;
+              if (!seenDeviceIds.has(deviceId)) {
+                seenDeviceIds.add(deviceId);
+                const targetObj = {
+                  ip: candidateIp,
+                  wsPort: String(healthData.wsPort || raw.wsPort || raw.httpPort || 41235),
+                  udpMovePort: String(healthData.udpMovePort || raw.udpMovePort || 41236),
+                  discoveryPort: String(healthData.udpDiscoveryPort || raw.discoveryPort || 41234),
+                  host: healthData.host || raw.name || raw.host || 'Wi-Fi Mouse PC',
+                  platform: healthData.platform || raw.platform || 'unknown',
+                  deviceId: deviceId
+                };
+                validServers.push(targetObj);
+              }
+            }
+          }
+        } catch (_) {
+          // Reject invalid health check candidate
+        }
+      })
+    );
+
+    const totalElapsed = Date.now() - startTime;
+    const firstServer = validServers[0] ? `${validServers[0].host} (${validServers[0].ip})` : 'none';
+
+    if (logFn) {
+      logFn(
+        'info',
+        '[MOUSE-DISCOVERY]',
+        `Mode: UDP | Valid servers: ${validServers.length} | First server: ${firstServer} | First response ms: ${discoveryElapsed} | Total discovery ms: ${totalElapsed}`
+      );
+    }
+
+    return {
+      success: validServers.length > 0,
+      servers: validServers,
+      mode: 'UDP'
+    };
+  } catch (err) {
+    if (logFn) logFn('error', '[MOUSE-DISCOVERY]', `UDP discovery error: ${err?.message || String(err)}`);
+    return { success: false, servers: [], mode: 'UDP_ERROR' };
+  }
 }
 
 async function detectLocalSubnetPrefixes(activeTargetIp = '', manualDraftIp = '') {
@@ -297,75 +385,49 @@ export default function App() {
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(settings)).catch(() => {});
   }, [settings]);
 
-  // Subnet Scanning HTTP Discovery for local Wi-Fi (Phase 2A & 2B Dynamic Subnet Scan + Diagnostics)
+  // Connection Discovery Manager Effect (Primary: UDP Discovery, Fallback: HTTP Subnet Scan)
   useEffect(() => {
     if (!discoveryEnabled || manualMode) {
       return;
     }
     let isCancelled = false;
-    let hasRunDiagnosticProbe = false;
 
-    const scanSubnets = async () => {
+    const performDiscovery = async () => {
+      // Step 1: Run Primary UDP Discovery
+      const udpResult = await runUdpDiscovery(addDebugLog);
+
+      if (isCancelled) return;
+
+      if (udpResult.success && udpResult.servers.length > 0) {
+        setDiscovered(udpResult.servers);
+
+        // Check if saved target has deviceId matching a discovered server at a new IP
+        if (target && target.deviceId) {
+          const match = udpResult.servers.find((s) => s.deviceId === target.deviceId);
+          if (match && match.ip !== target.ip) {
+            addDebugLog(
+              'info',
+              '[MOUSE-DISCOVERY]',
+              `Saved device ID ${target.deviceId} found at new IP ${match.ip} (previously ${target.ip}). Updating saved target.`
+            );
+            safeSaveLastTarget(match);
+            setTarget(match);
+            connectToServer(match);
+            return;
+          }
+        }
+        return;
+      }
+
+      // Step 2: Fallback to HTTP Subnet Scan if UDP Discovery found nothing
+      addDebugLog('info', '[MOUSE-DISCOVERY]', 'UDP discovery yielded 0 valid servers. Running HTTP subnet discovery fallback.');
+
       const subnets = await detectLocalSubnetPrefixes(target?.ip, manualDraft?.ip);
-
       const candidateIps = ['127.0.0.1', '10.0.2.2'];
       for (const prefix of subnets) {
         for (let i = 1; i <= 254; i++) {
           candidateIps.push(`${prefix}.${i}`);
         }
-      }
-
-      const derivedRangeStr = subnets.length > 0 ? `${subnets[0]}.1 - ${subnets[0]}.254` : 'UNKNOWN';
-      const targetDiagnosticIncluded = candidateIps.includes('10.80.244.114');
-
-      addDebugLog(
-        'info',
-        '[MOUSE-DISCOVERY]',
-        `Phone local IP: UNKNOWN\n` +
-          `Phone subnet: ${subnets[0] || 'UNKNOWN'}\n` +
-          `Subnet mask: UNKNOWN\n` +
-          `Gateway: UNKNOWN\n` +
-          `Network interface: UNKNOWN\n` +
-          `Derived scan range: ${derivedRangeStr}\n` +
-          `Number of candidate addresses: ${candidateIps.length}`
-      );
-
-      addDebugLog(
-        'info',
-        '[MOUSE-DISCOVERY-VERIFY]',
-        `Target diagnostic IP included: ${targetDiagnosticIncluded ? 'YES' : 'NO'}`
-      );
-
-      // Targeted diagnostic probe to 10.80.244.114 for debugging
-      if (!hasRunDiagnosticProbe) {
-        hasRunDiagnosticProbe = true;
-        (async () => {
-          const probeUrl = 'http://10.80.244.114:41235/health';
-          const startTime = Date.now();
-          addDebugLog('info', 'Direct diagnostic probe', `URL: ${probeUrl} | Started: ${new Date(startTime).toISOString()}`);
-          try {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 3000);
-            const res = await fetch(probeUrl, { signal: controller.signal });
-            clearTimeout(timer);
-            const elapsed = Date.now() - startTime;
-            const text = await res.text();
-            let json = null;
-            try { json = JSON.parse(text); } catch (_) {}
-            addDebugLog(
-              'info',
-              'Direct diagnostic probe result',
-              `Response received: YES | HTTP status: ${res.status} | Elapsed ms: ${elapsed} | Raw text: ${text}`
-            );
-          } catch (err) {
-            const elapsed = Date.now() - startTime;
-            addDebugLog(
-              'error',
-              'Direct diagnostic probe result',
-              `Response received: NO | Elapsed ms: ${elapsed} | Error: ${err?.name || 'Error'}: ${err?.message || String(err)}`
-            );
-          }
-        })();
       }
 
       const counters = {
@@ -411,17 +473,16 @@ export default function App() {
 
               if (res.ok) {
                 const data = await res.json();
-                addDebugLog('info', 'Raw /health payload received', `IP ${ip}: ${JSON.stringify(data)}`);
                 if (data && data.app === 'WirelessMouseKeyboardRemote') {
                   counters.validServers += 1;
                   const targetObj = normalizeDiscoveredTarget(data, ip);
-                  if (!foundList.some((item) => item.ip === targetObj.ip)) {
+                  if (!foundList.some((item) => (item.deviceId && item.deviceId === targetObj.deviceId) || item.ip === targetObj.ip)) {
                     foundList.push(targetObj);
                     if (!isCancelled) {
                       setDiscovered([...foundList]);
                       addDebugLog(
                         'info',
-                        'Discovered PC server',
+                        'Discovered PC server via HTTP fallback',
                         `${targetObj.host ? `${targetObj.host} (${targetObj.ip})` : targetObj.ip}:${targetObj.wsPort}`
                       );
                     }
@@ -443,18 +504,18 @@ export default function App() {
       addDebugLog(
         'info',
         '[MOUSE-DISCOVERY-RESULT]',
-        `Candidates: ${counters.candidates} | Started: ${counters.started} | Completed: ${counters.completed} | Timeouts: ${counters.timeouts} | Failed: ${counters.failed} | HTTP responses: ${counters.httpResponses} | HTTP 200: ${counters.http200} | Valid servers: ${counters.validServers} | Other HTTP: ${counters.otherHttp} | Aborted: ${counters.aborted}`
+        `Mode: HTTP Fallback | Candidates: ${counters.candidates} | Valid servers: ${counters.validServers}`
       );
     };
 
-    scanSubnets();
+    performDiscovery();
 
-    const interval = setInterval(scanSubnets, 10000);
+    const interval = setInterval(performDiscovery, 12000);
     return () => {
       isCancelled = true;
       clearInterval(interval);
     };
-  }, [discoveryEnabled, manualMode, target?.ip]);
+  }, [discoveryEnabled, manualMode, target?.ip, target?.deviceId]);
 
   useEffect(() => {
     return () => {
@@ -617,10 +678,12 @@ export default function App() {
         if (payload.type === 'welcome' || payload.type === 'handshake-ack') {
           const updatedHost = payload.host || server.host || '';
           const updatedPlatform = payload.platform || server.platform || '';
+          const updatedDeviceId = payload.deviceId || server.deviceId || '';
           const updatedServer = {
             ...server,
             host: updatedHost,
-            platform: updatedPlatform
+            platform: updatedPlatform,
+            deviceId: updatedDeviceId
           };
           setTarget(updatedServer);
           const finalHostLabel = updatedHost
@@ -1159,7 +1222,7 @@ export default function App() {
                 ) : (
                   discovered.map((item, index) => (
                     <TactileButton
-                      key={`${item.ip}:${item.wsPort}`}
+                      key={`${item.deviceId || item.ip}:${item.wsPort}`}
                       onPress={() => connectDiscovered(index)}
                       style={styles.discoveredRow}
                     >
@@ -1168,7 +1231,7 @@ export default function App() {
                           {item.host ? `🖥️ ${item.host}` : item.ip}
                         </Text>
                         <Text style={styles.discoveredMetaText}>
-                          {item.host ? `${item.ip} | ` : ''}WS {item.wsPort} | UDP {item.udpMovePort}
+                          {item.platform ? `${item.platform} · Available` : 'Available'}
                         </Text>
                       </View>
                       <View style={styles.connectPill}>
