@@ -873,8 +873,6 @@ export default function App() {
     addDebugLog('info', '[GESTURE]', msg);
   }
 
-  const movedRef = useRef(false);
-  const multiTouchRef = useRef(false);
   const gestureStateRef = useRef(GESTURE_IDLE);
   const doubleTapTimerRef = useRef(null);
   const touchStartTimeRef = useRef(0);
