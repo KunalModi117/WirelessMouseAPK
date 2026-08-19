@@ -136,20 +136,17 @@ function normalizeDiscoveredTarget(payload, fallbackAddress) {
 
 async function runUdpDiscovery(logFn) {
   const startTime = Date.now();
-  if (logFn) logFn('info', '[MOUSE-DISCOVERY]', `Mode: UDP | Started: ${new Date(startTime).toISOString()}`);
 
   const { UdpDiscoveryModule } = NativeModules;
   if (!UdpDiscoveryModule || typeof UdpDiscoveryModule.discoverServers !== 'function') {
-    if (logFn) logFn('warn', '[MOUSE-DISCOVERY]', 'Mode: UDP | Native UdpDiscoveryModule unavailable. Falling back.');
     return { success: false, servers: [], mode: 'UDP_UNAVAILABLE' };
   }
 
   try {
     const rawResults = await UdpDiscoveryModule.discoverServers(41234, 1500);
+    if (logFn) logFn('info', '[MOUSE-DISCOVERY]', 'Socket closed');
     const discoveryElapsed = Date.now() - startTime;
     const rawCount = Array.isArray(rawResults) ? rawResults.length : 0;
-
-    if (logFn) logFn('info', '[MOUSE-DISCOVERY]', `Responses: ${rawCount} raw UDP responses in ${discoveryElapsed}ms`);
 
     if (!Array.isArray(rawResults) || rawResults.length === 0) {
       return { success: false, servers: [], mode: 'UDP_NO_RESPONSES' };
@@ -195,17 +192,6 @@ async function runUdpDiscovery(logFn) {
         }
       })
     );
-
-    const totalElapsed = Date.now() - startTime;
-    const firstServer = validServers[0] ? `${validServers[0].host} (${validServers[0].ip})` : 'none';
-
-    if (logFn) {
-      logFn(
-        'info',
-        '[MOUSE-DISCOVERY]',
-        `Mode: UDP | Valid servers: ${validServers.length} | First server: ${firstServer} | First response ms: ${discoveryElapsed} | Total discovery ms: ${totalElapsed}`
-      );
-    }
 
     return {
       success: validServers.length > 0,
@@ -385,46 +371,50 @@ export default function App() {
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(settings)).catch(() => {});
   }, [settings]);
 
+  const discoveryStateRef = useRef('IDLE');
   const isDiscoveryRunningRef = useRef(false);
 
   // Connection Discovery Manager Effect (Primary: UDP Discovery, Fallback: HTTP Subnet Scan)
   useEffect(() => {
-    if (!discoveryEnabled || manualMode || connectionStatus === 'connected') {
-      if (connectionStatus === 'connected') {
-        addDebugLog('info', '[MOUSE-DISCOVERY]', 'Discovery stopped: connected');
+    if (!discoveryEnabled || manualMode || connectionStatus === 'connected' || discoveryStateRef.current === 'CONNECTED') {
+      if (connectionStatus === 'connected' || discoveryStateRef.current === 'CONNECTED') {
+        addDebugLog('info', '[MOUSE-DISCOVERY]', 'Stopped: connected');
       }
       return;
     }
     let isCancelled = false;
 
     const performDiscovery = async () => {
-      if (isCancelled || connectionStatus === 'connected' || isDiscoveryRunningRef.current) {
+      if (isCancelled || connectionStatus === 'connected' || discoveryStateRef.current === 'CONNECTED' || isDiscoveryRunningRef.current) {
         return;
       }
       isDiscoveryRunningRef.current = true;
-      addDebugLog('info', '[MOUSE-DISCOVERY]', 'Discovery started');
+      discoveryStateRef.current = 'DISCOVERING';
+      addDebugLog('info', '[MOUSE-DISCOVERY]', 'Started');
 
       try {
         // Step 1: Run Primary UDP Discovery
         const udpResult = await runUdpDiscovery(addDebugLog);
 
-        if (isCancelled || connectionStatus === 'connected') return;
+        if (isCancelled || connectionStatus === 'connected' || discoveryStateRef.current === 'CONNECTED') {
+          addDebugLog('info', '[MOUSE-DISCOVERY]', 'Stopped: connected');
+          return;
+        }
 
         if (udpResult.success && udpResult.servers.length > 0) {
+          const first = udpResult.servers[0];
+          addDebugLog('info', '[MOUSE-DISCOVERY]', `Server discovered: ${first.ip}`);
           setDiscovered(udpResult.servers);
 
           // Check if saved target has deviceId matching a discovered server at a new IP
           if (target && target.deviceId) {
             const match = udpResult.servers.find((s) => s.deviceId === target.deviceId);
             if (match && match.ip !== target.ip) {
-              addDebugLog(
-                'info',
-                '[MOUSE-DISCOVERY]',
-                `Saved device ID ${target.deviceId} found at new IP ${match.ip} (previously ${target.ip}). Updating saved target.`
-              );
-              safeSaveLastTarget(match);
-              setTarget(match);
-              connectToServer(match);
+              if (connectionStatus !== 'connected' && discoveryStateRef.current !== 'CONNECTED') {
+                safeSaveLastTarget(match);
+                setTarget(match);
+                connectToServer(match);
+              }
               return;
             }
           }
@@ -432,9 +422,10 @@ export default function App() {
         }
 
         // Step 2: Fallback to HTTP Subnet Scan if UDP Discovery found nothing
-        if (isCancelled || connectionStatus === 'connected') return;
-
-        addDebugLog('info', '[MOUSE-DISCOVERY]', 'UDP discovery yielded 0 valid servers. Running HTTP subnet discovery fallback.');
+        if (isCancelled || connectionStatus === 'connected' || discoveryStateRef.current === 'CONNECTED') {
+          addDebugLog('info', '[MOUSE-DISCOVERY]', 'Stopped: connected');
+          return;
+        }
 
         const subnets = await detectLocalSubnetPrefixes(target?.ip, manualDraft?.ip);
         const candidateIps = ['127.0.0.1', '10.0.2.2'];
@@ -448,13 +439,13 @@ export default function App() {
         const batchSize = 50;
 
         for (let i = 0; i < candidateIps.length; i += batchSize) {
-          if (isCancelled || connectionStatus === 'connected') {
+          if (isCancelled || connectionStatus === 'connected' || discoveryStateRef.current === 'CONNECTED') {
             break;
           }
           const batch = candidateIps.slice(i, i + batchSize);
           await Promise.all(
             batch.map(async (ip) => {
-              if (isCancelled || connectionStatus === 'connected') return;
+              if (isCancelled || connectionStatus === 'connected' || discoveryStateRef.current === 'CONNECTED') return;
               try {
                 const controller = new AbortController();
                 const timer = setTimeout(() => controller.abort(), 700);
@@ -469,13 +460,9 @@ export default function App() {
                     const targetObj = normalizeDiscoveredTarget(data, ip);
                     if (!foundList.some((item) => (item.deviceId && item.deviceId === targetObj.deviceId) || item.ip === targetObj.ip)) {
                       foundList.push(targetObj);
-                      if (!isCancelled && connectionStatus !== 'connected') {
+                      if (!isCancelled && connectionStatus !== 'connected' && discoveryStateRef.current !== 'CONNECTED') {
                         setDiscovered([...foundList]);
-                        addDebugLog(
-                          'info',
-                          'Discovered PC server via HTTP fallback',
-                          `${targetObj.host ? `${targetObj.host} (${targetObj.ip})` : targetObj.ip}:${targetObj.wsPort}`
-                        );
+                        addDebugLog('info', '[MOUSE-DISCOVERY]', `Server discovered: ${targetObj.ip}`);
                       }
                     }
                   }
@@ -486,6 +473,9 @@ export default function App() {
         }
       } finally {
         isDiscoveryRunningRef.current = false;
+        if (discoveryStateRef.current !== 'CONNECTED') {
+          discoveryStateRef.current = 'IDLE';
+        }
       }
     };
 
@@ -623,7 +613,9 @@ export default function App() {
       if (connectionIdRef.current !== connectionId) {
         return;
       }
+      discoveryStateRef.current = 'CONNECTED';
       setConnectionStatus('connected');
+      addDebugLog('info', '[MOUSE-DISCOVERY]', 'Stopped: connected');
       const initialHostLabel = server.host
         ? `🖥️ ${server.host} (${server.ip}:${server.wsPort})`
         : `${server.ip}:${server.wsPort}`;
@@ -639,6 +631,9 @@ export default function App() {
           setLastError('Connection timed out. Reconnecting...');
           addDebugLog('warn', 'Heartbeat timeout', `last pong ${elapsed}ms ago`);
           setConnectionStatus('disconnected');
+          if (discoveryStateRef.current === 'CONNECTED') {
+            discoveryStateRef.current = 'IDLE';
+          }
           try {
             socket.close();
           } catch (_) {}
@@ -684,6 +679,9 @@ export default function App() {
         return;
       }
       setConnectionStatus('disconnected');
+      if (discoveryStateRef.current === 'CONNECTED') {
+        discoveryStateRef.current = 'IDLE';
+      }
       setLastError(`Unable to connect to ${wsUrl}`);
       addDebugLog('error', 'WebSocket error', event?.message || 'socket error');
     };
@@ -694,6 +692,9 @@ export default function App() {
       }
       stopReconnectLoop();
       setConnectionStatus('disconnected');
+      if (discoveryStateRef.current === 'CONNECTED') {
+        discoveryStateRef.current = 'IDLE';
+      }
       addDebugLog(
         'warn',
         'WebSocket closed',

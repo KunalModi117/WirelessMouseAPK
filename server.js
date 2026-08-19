@@ -98,27 +98,33 @@ function createUdpDiscoveryServer(deviceId) {
 
   socket.on('message', (msg, rinfo) => {
     const raw = msg.toString('utf8').trim();
-    console.log(`[DISCOVERY-SERVER] Request received: "${raw}" from ${rinfo.address}:${rinfo.port}`);
+    if (raw.startsWith('{')) {
+      return; // Ignore self beacons or JSON payloads
+    }
 
-    const responsePayload = JSON.stringify({
-      type: 'wifi-mouse-discovery',
-      version: 1,
-      deviceId: deviceId,
-      name: os.hostname(),
-      host: os.hostname(),
-      platform: os.platform(),
-      httpPort: PORTS.http,
-      wsPort: PORTS.http
-    });
+    if (raw === 'WM_DISCOVER_V1' || raw.includes('WM_DISCOVER')) {
+      console.log(`[DISCOVERY-SERVER] Discovery request from ${rinfo.address}:${rinfo.port}`);
 
-    const buf = Buffer.from(responsePayload);
-    socket.send(buf, 0, buf.length, rinfo.port, rinfo.address, (err) => {
-      if (err) {
-        console.warn(`[DISCOVERY-SERVER] Send error to ${rinfo.address}:${rinfo.port}:`, err.message);
-      } else {
-        console.log(`[DISCOVERY-SERVER] Response sent to ${rinfo.address}:${rinfo.port} | Device ID: ${deviceId} | Platform: ${os.platform()}`);
-      }
-    });
+      const responsePayload = JSON.stringify({
+        type: 'wifi-mouse-discovery',
+        version: 1,
+        deviceId: deviceId,
+        name: os.hostname(),
+        host: os.hostname(),
+        platform: os.platform(),
+        httpPort: PORTS.http,
+        wsPort: PORTS.http
+      });
+
+      const buf = Buffer.from(responsePayload);
+      socket.send(buf, 0, buf.length, rinfo.port, rinfo.address, (err) => {
+        if (err) {
+          console.warn(`[DISCOVERY-SERVER] Send error to ${rinfo.address}:${rinfo.port}:`, err.message);
+        } else {
+          console.log(`[DISCOVERY-SERVER] Response sent to ${rinfo.address}:${rinfo.port}`);
+        }
+      });
+    }
   });
 
   socket.on('error', (err) => {
@@ -135,7 +141,7 @@ function createUdpDiscoveryServer(deviceId) {
   // SECONDARY: PC Discovery Beacon (PC -> Mobile)
   const sendBeacon = () => {
     const beaconPayload = JSON.stringify({
-      type: 'wifi-mouse-discovery',
+      type: 'wifi-mouse-beacon',
       version: 1,
       deviceId: deviceId,
       name: os.hostname(),
