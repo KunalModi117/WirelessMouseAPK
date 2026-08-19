@@ -96,9 +96,10 @@ function createCommandRouter({ mouseController, state }) {
 
   async function handleScroll(payload) {
     const delta = clampNumber(payload.delta);
+    const deltaX = clampNumber(payload.deltaX);
     const sensitivity = clampNumber(payload.sensitivity, 1);
     try {
-      await mouseController.scroll(delta * sensitivity);
+      await mouseController.scroll(delta * sensitivity, deltaX * sensitivity);
     } catch (err) {
       console.warn('[router] handleScroll error:', err.message);
     }

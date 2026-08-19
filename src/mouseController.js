@@ -36,32 +36,48 @@ function createSubPixelAccumulator() {
 }
 
 function createScrollAccumulator(threshold = 10) {
-  let accumulated = 0;
+  let accY = 0;
+  let accX = 0;
 
   return {
-    add(delta) {
-      const val = Number(delta) || 0;
-      if (val === 0) return 0;
+    add(deltaY, deltaX = 0) {
+      const valY = Number(deltaY) || 0;
+      const valX = Number(deltaX) || 0;
 
-      if ((val > 0 && accumulated < 0) || (val < 0 && accumulated > 0)) {
-        accumulated = 0;
+      if ((valY > 0 && accY < 0) || (valY < 0 && accY > 0)) {
+        accY = 0;
+      }
+      if ((valX > 0 && accX < 0) || (valX < 0 && accX > 0)) {
+        accX = 0;
       }
 
-      accumulated += val;
+      accY += valY;
+      accX += valX;
 
-      let ticks = 0;
-      if (accumulated >= threshold) {
-        ticks = Math.floor(accumulated / threshold);
-        accumulated -= ticks * threshold;
-      } else if (accumulated <= -threshold) {
-        ticks = Math.ceil(accumulated / threshold);
-        accumulated -= ticks * threshold;
+      let ticksY = 0;
+      let ticksX = 0;
+
+      if (accY >= threshold) {
+        ticksY = Math.floor(accY / threshold);
+        accY -= ticksY * threshold;
+      } else if (accY <= -threshold) {
+        ticksY = Math.ceil(accY / threshold);
+        accY -= ticksY * threshold;
       }
 
-      return ticks;
+      if (accX >= threshold) {
+        ticksX = Math.floor(accX / threshold);
+        accX -= ticksX * threshold;
+      } else if (accX <= -threshold) {
+        ticksX = Math.ceil(accX / threshold);
+        accX -= ticksX * threshold;
+      }
+
+      return { ticksY, ticksX };
     },
     reset() {
-      accumulated = 0;
+      accY = 0;
+      accX = 0;
     }
   };
 }
@@ -164,6 +180,12 @@ while ($line = [Console]::ReadLine()) {
             $wheel = if ($delta -ge 0) { $amount * 120 } else { -$amount * 120 }
             [InputSim]::mouse_event(0x0800, 0, 0, [uint32]$wheel, [UIntPtr]::Zero)
         }
+        'SH' {
+            $delta = [int]$parts[1]
+            $amount = [Math]::Max(1, [Math]::Abs($delta))
+            $wheel = if ($delta -ge 0) { $amount * 120 } else { -$amount * 120 }
+            [InputSim]::mouse_event(0x1000, 0, 0, [uint32]$wheel, [UIntPtr]::Zero)
+        }
         'D' {
             $active = $parts[1] -eq '1'
             $btn = $parts[2]
@@ -226,10 +248,13 @@ while ($line = [Console]::ReadLine()) {
         sendCmd(`M ${stepX} ${stepY}`);
       }
     },
-    async scroll(delta) {
-      const ticks = scrollAccumulator.add(delta);
-      if (ticks !== 0) {
-        sendCmd(`S ${ticks}`);
+    async scroll(deltaY, deltaX = 0) {
+      const { ticksY, ticksX } = scrollAccumulator.add(deltaY, deltaX);
+      if (ticksY !== 0) {
+        sendCmd(`S ${ticksY}`);
+      }
+      if (ticksX !== 0) {
+        sendCmd(`SH ${ticksX}`);
       }
     },
     async click(button) {
@@ -374,6 +399,14 @@ while True:
                     xtst.XTestFakeButtonEvent(display, btn, True, 0)
                     xtst.XTestFakeButtonEvent(display, btn, False, 0)
                 x11.XFlush(display)
+            elif cmd == 'SH' and display:
+                delta = int(arg.strip())
+                btn = 7 if delta >= 0 else 6
+                amount = max(1, abs(delta))
+                for _ in range(amount):
+                    xtst.XTestFakeButtonEvent(display, btn, True, 0)
+                    xtst.XTestFakeButtonEvent(display, btn, False, 0)
+                x11.XFlush(display)
             elif cmd == 'D' and display:
                 d_parts = arg.split()
                 if len(d_parts) >= 2:
@@ -484,19 +517,33 @@ while True:
         });
       }
     },
-    async scroll(delta) {
+    async scroll(deltaY, deltaX = 0) {
       if (!isLinux) return;
-      const ticks = scrollAccumulator.add(delta);
-      if (ticks === 0) return;
-      if (!sendPythonCmd(`S ${ticks}`)) {
-        const btn = ticks >= 0 ? '5' : '4';
-        const amount = Math.abs(ticks);
-        for (let i = 0; i < amount; i += 1) {
-          execFile('xdotool', ['click', btn], (err) => {
-            if (err) {
-              console.warn('[mouse-linux] xdotool scroll failed:', err.message);
-            }
-          });
+      const { ticksY, ticksX } = scrollAccumulator.add(deltaY, deltaX);
+      if (ticksY !== 0) {
+        if (!sendPythonCmd(`S ${ticksY}`)) {
+          const btn = ticksY >= 0 ? '5' : '4';
+          const amount = Math.abs(ticksY);
+          for (let i = 0; i < amount; i += 1) {
+            execFile('xdotool', ['click', btn], (err) => {
+              if (err) {
+                console.warn('[mouse-linux] xdotool scroll failed:', err.message);
+              }
+            });
+          }
+        }
+      }
+      if (ticksX !== 0) {
+        if (!sendPythonCmd(`SH ${ticksX}`)) {
+          const btn = ticksX >= 0 ? '7' : '6';
+          const amount = Math.abs(ticksX);
+          for (let i = 0; i < amount; i += 1) {
+            execFile('xdotool', ['click', btn], (err) => {
+              if (err) {
+                console.warn('[mouse-linux] xdotool scroll failed:', err.message);
+              }
+            });
+          }
         }
       }
     },
@@ -658,12 +705,17 @@ while True:
         });
       }
     },
-    async scroll(delta) {
+    async scroll(deltaY, deltaX = 0) {
       if (!isMac) return;
-      const ticks = scrollAccumulator.add(delta);
-      if (ticks === 0) return;
-      const direction = ticks >= 0 ? 'down' : 'up';
-      execFile('cliclick', [`s:${direction}:${Math.abs(ticks)}`], () => {});
+      const { ticksY, ticksX } = scrollAccumulator.add(deltaY, deltaX);
+      if (ticksY !== 0) {
+        const direction = ticksY >= 0 ? 'down' : 'up';
+        execFile('cliclick', [`s:${direction}:${Math.abs(ticksY)}`], () => {});
+      }
+      if (ticksX !== 0) {
+        const direction = ticksX >= 0 ? 'right' : 'left';
+        execFile('cliclick', [`s:${direction}:${Math.abs(ticksX)}`], () => {});
+      }
     },
     async click(button) {
       if (!isMac) return;

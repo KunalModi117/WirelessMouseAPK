@@ -268,10 +268,12 @@ async function detectLocalSubnetPrefixes(activeTargetIp = '', manualDraftIp = ''
  * Reusable Tactile Button following Apple design principles:
  * Instant touch-down feedback, critically damped scaling, and strong visual feedback.
  */
-function TactileButton({ onPress, style, pressedStyle, children, activeOpacity = 0.8, scaleDown = 0.97 }) {
+function TactileButton({ onPress, onPressIn, onPressOut, style, pressedStyle, children, activeOpacity = 0.8, scaleDown = 0.97 }) {
   return (
     <Pressable
       onPress={onPress}
+      onPressIn={onPressIn}
+      onPressOut={onPressOut}
       style={({ pressed }) => [
         style,
         pressed && [
@@ -778,13 +780,19 @@ export default function App() {
     sendWs({ type: 'click', button });
   }
 
-  function sendScroll(delta) {
-    if (Math.abs(delta) > 0.1) {
-      addDebugLog('info', 'Scroll', String(Math.round(delta)));
+  function sendDrag(active, button) {
+    addDebugLog('info', 'Drag', `${active ? 'Down' : 'Up'} ${button}`);
+    sendWs({ type: 'drag', active, button });
+  }
+
+  function sendScroll(deltaY, deltaX = 0) {
+    if (Math.abs(deltaY) > 0.1 || Math.abs(deltaX) > 0.1) {
+      addDebugLog('info', 'Scroll', `Y:${Math.round(deltaY)} X:${Math.round(deltaX)}`);
     }
     sendWs({
       type: 'scroll',
-      delta,
+      delta: deltaY,
+      deltaX: deltaX,
       sensitivity: settings.scrollSensitivity,
       smooth: false
     });
@@ -853,8 +861,24 @@ export default function App() {
     setInputValue(DUMMY_BUFFER);
   }
 
+  const GESTURE_IDLE = 'IDLE';
+  const GESTURE_SINGLE_TOUCH = 'SINGLE_TOUCH';
+  const GESTURE_TAP_WAIT = 'TAP_WAIT';
+  const GESTURE_POTENTIAL_RIGHT_CLICK = 'POTENTIAL_RIGHT_CLICK';
+  const GESTURE_DOUBLE_TAP_HOLD = 'DOUBLE_TAP_HOLD';
+  const GESTURE_DRAGGING = 'DRAGGING';
+  const GESTURE_SCROLL = 'SCROLL';
+  const GESTURE_IGNORE = 'IGNORE';
+
+  const DOUBLE_TAP_WINDOW_MS = 200;
+  const RIGHT_CLICK_WINDOW_MS = 400;
+
   const lastTouchPosRef = useRef(null);
   const lastScrollYRef = useRef(null);
+  const gestureStateRef = useRef(GESTURE_IDLE);
+  const touchStartPosRef = useRef({ x: 0, y: 0, time: 0 });
+  const doubleTapTimerRef = useRef(null);
+  const scrollAxisRef = useRef(null);
 
   const trackpadResponder = useMemo(
     () =>
@@ -862,23 +886,36 @@ export default function App() {
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: (evt) => {
-          movedRef.current = false;
-          multiTouchRef.current = false;
           const centroid = getTouchCentroid(evt);
+          const now = Date.now();
           lastTouchPosRef.current = centroid;
-          if (centroid && centroid.count >= 2) {
-            multiTouchRef.current = true;
+          pendingMoveRef.current = { x: 0, y: 0, touchCount: centroid ? centroid.count : 1 };
+
+          if (centroid && centroid.count === 1) {
+            if (gestureStateRef.current === GESTURE_TAP_WAIT) {
+              clearTimeout(doubleTapTimerRef.current);
+              gestureStateRef.current = GESTURE_DOUBLE_TAP_HOLD;
+              touchStartPosRef.current = { x: centroid.x, y: centroid.y, time: now };
+            } else {
+              gestureStateRef.current = GESTURE_SINGLE_TOUCH;
+              touchStartPosRef.current = { x: centroid.x, y: centroid.y, time: now };
+            }
+          } else if (centroid && centroid.count >= 2) {
+            if (gestureStateRef.current === GESTURE_SINGLE_TOUCH || gestureStateRef.current === GESTURE_TAP_WAIT || gestureStateRef.current === GESTURE_IDLE) {
+              gestureStateRef.current = GESTURE_POTENTIAL_RIGHT_CLICK;
+              touchStartPosRef.current = { x: centroid.x, y: centroid.y, time: now };
+              scrollAxisRef.current = null;
+            }
           }
-          pendingMoveRef.current = { x: 0, y: 0 };
         },
         onPanResponderMove: (evt, gestureState) => {
           const centroid = getTouchCentroid(evt);
-          if (!centroid) {
-            return;
-          }
+          if (!centroid) return;
 
-          if (centroid.count >= 2) {
-            multiTouchRef.current = true;
+          if (centroid.count >= 2 && gestureStateRef.current === GESTURE_SINGLE_TOUCH) {
+            gestureStateRef.current = GESTURE_POTENTIAL_RIGHT_CLICK;
+            touchStartPosRef.current = { x: centroid.x, y: centroid.y, time: Date.now() };
+            scrollAxisRef.current = null;
           }
 
           if (!lastTouchPosRef.current || lastTouchPosRef.current.count !== centroid.count) {
@@ -890,39 +927,103 @@ export default function App() {
           const dy = centroid.y - lastTouchPosRef.current.y;
           lastTouchPosRef.current = centroid;
 
-          if (multiTouchRef.current) {
-            if (Math.abs(gestureState.dx) > 6 || Math.abs(gestureState.dy) > 6) {
-              movedRef.current = true;
+          const distFromStart = Math.hypot(centroid.x - touchStartPosRef.current.x, centroid.y - touchStartPosRef.current.y);
+
+          if (gestureStateRef.current === GESTURE_POTENTIAL_RIGHT_CLICK) {
+            if (distFromStart > 8) {
+              gestureStateRef.current = GESTURE_SCROLL;
             }
-            if (Math.abs(dy) > 0.1) {
-              sendScroll(-dy);
+          }
+
+          if (gestureStateRef.current === GESTURE_SCROLL) {
+            if (centroid.count < 2) {
+              gestureStateRef.current = GESTURE_IGNORE;
+              return;
+            }
+            if (!scrollAxisRef.current) {
+               if (Math.abs(gestureState.dx) > Math.abs(gestureState.dy)) {
+                 scrollAxisRef.current = 'H';
+               } else {
+                 scrollAxisRef.current = 'V';
+               }
+            }
+            if (scrollAxisRef.current === 'H' && Math.abs(dx) > 0.1) {
+              sendScroll(0, dx);
+            } else if (scrollAxisRef.current === 'V' && Math.abs(dy) > 0.1) {
+              sendScroll(-dy, 0);
             }
             return;
           }
 
-          if (Math.abs(gestureState.dx) > 4 || Math.abs(gestureState.dy) > 4) {
-            movedRef.current = true;
+          if (gestureStateRef.current === GESTURE_DOUBLE_TAP_HOLD) {
+            if (distFromStart > 5) {
+              gestureStateRef.current = GESTURE_DRAGGING;
+              sendDrag(true, 'left');
+            }
           }
 
-          if (Math.abs(dx) + Math.abs(dy) > 0.1) {
+          if (gestureStateRef.current === GESTURE_DRAGGING) {
             sendMove(dx, dy);
-          } else {
-            touchDiagRef.current.lost += 1;
+            return;
+          }
+
+          if (gestureStateRef.current === GESTURE_SINGLE_TOUCH) {
+            if (Math.abs(dx) + Math.abs(dy) > 0.1) {
+              sendMove(dx, dy);
+            } else {
+              touchDiagRef.current.lost += 1;
+            }
           }
         },
         onPanResponderRelease: () => {
           flushPendingMove();
-          lastTouchPosRef.current = null;
-          if (!movedRef.current) {
-            if (multiTouchRef.current) {
-              sendClick('right');
-            } else {
-              sendClick('left');
-            }
+          const now = Date.now();
+
+          if (gestureStateRef.current === GESTURE_SINGLE_TOUCH) {
+             const dist = Math.hypot(lastTouchPosRef.current.x - touchStartPosRef.current.x, lastTouchPosRef.current.y - touchStartPosRef.current.y);
+             const duration = now - touchStartPosRef.current.time;
+             if (dist < 10 && duration < 250) {
+                 gestureStateRef.current = GESTURE_TAP_WAIT;
+                 if (doubleTapTimerRef.current) clearTimeout(doubleTapTimerRef.current);
+                 doubleTapTimerRef.current = setTimeout(() => {
+                     if (gestureStateRef.current === GESTURE_TAP_WAIT) {
+                         sendClick('left');
+                         gestureStateRef.current = GESTURE_IDLE;
+                     }
+                 }, DOUBLE_TAP_WINDOW_MS);
+             } else {
+                 gestureStateRef.current = GESTURE_IDLE;
+             }
+          } else if (gestureStateRef.current === GESTURE_POTENTIAL_RIGHT_CLICK) {
+             const dist = Math.hypot(lastTouchPosRef.current.x - touchStartPosRef.current.x, lastTouchPosRef.current.y - touchStartPosRef.current.y);
+             const duration = now - touchStartPosRef.current.time;
+             if (dist <= 8 && duration < RIGHT_CLICK_WINDOW_MS) {
+                 sendClick('right');
+             }
+             gestureStateRef.current = GESTURE_IDLE;
+          } else if (gestureStateRef.current === GESTURE_DOUBLE_TAP_HOLD) {
+             const dist = Math.hypot(lastTouchPosRef.current.x - touchStartPosRef.current.x, lastTouchPosRef.current.y - touchStartPosRef.current.y);
+             const duration = now - touchStartPosRef.current.time;
+             if (dist < 10 && duration < 250) {
+                 sendClick('left');
+                 setTimeout(() => sendClick('left'), 50);
+             }
+             gestureStateRef.current = GESTURE_IDLE;
+          } else if (gestureStateRef.current === GESTURE_DRAGGING) {
+             sendDrag(false, 'left');
+             gestureStateRef.current = GESTURE_IDLE;
+          } else {
+             gestureStateRef.current = GESTURE_IDLE;
           }
+          
+          lastTouchPosRef.current = null;
         },
         onPanResponderTerminate: () => {
           flushPendingMove();
+          if (gestureStateRef.current === GESTURE_DRAGGING) {
+             sendDrag(false, 'left');
+          }
+          gestureStateRef.current = GESTURE_IDLE;
           lastTouchPosRef.current = null;
         }
       }),
@@ -1078,7 +1179,10 @@ export default function App() {
 
           {/* 4. LEFT / RIGHT CLICK BUTTONS */}
           <View style={styles.clickBar}>
-            <TactileButton onPress={() => sendClick('left')} style={styles.leftClickBtn}>
+            <TactileButton 
+              onPressIn={() => sendDrag(true, 'left')} 
+              onPressOut={() => sendDrag(false, 'left')} 
+              style={styles.leftClickBtn}>
               <View style={styles.clickIconIndicatorLeft} />
             </TactileButton>
             <View style={styles.clickDivider} />
