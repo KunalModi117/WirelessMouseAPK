@@ -862,23 +862,27 @@ export default function App() {
   }
 
   const GESTURE_IDLE = 'IDLE';
-  const GESTURE_SINGLE_TOUCH = 'SINGLE_TOUCH';
   const GESTURE_TAP_WAIT = 'TAP_WAIT';
-  const GESTURE_POTENTIAL_RIGHT_CLICK = 'POTENTIAL_RIGHT_CLICK';
-  const GESTURE_DOUBLE_TAP_HOLD = 'DOUBLE_TAP_HOLD';
   const GESTURE_DRAGGING = 'DRAGGING';
-  const GESTURE_SCROLL = 'SCROLL';
-  const GESTURE_IGNORE = 'IGNORE';
 
   const DOUBLE_TAP_WINDOW_MS = 200;
   const RIGHT_CLICK_WINDOW_MS = 400;
 
+  function logGesture(msg) {
+    // Lightweight diagnostics
+    addDebugLog('info', '[GESTURE]', msg);
+  }
+
+  const movedRef = useRef(false);
+  const multiTouchRef = useRef(false);
+  const gestureStateRef = useRef(GESTURE_IDLE);
+  const doubleTapTimerRef = useRef(null);
+  const touchStartTimeRef = useRef(0);
+  const scrollAxisRef = useRef(null);
+  const accumMoveRef = useRef({ x: 0, y: 0 });
+  
   const lastTouchPosRef = useRef(null);
   const lastScrollYRef = useRef(null);
-  const gestureStateRef = useRef(GESTURE_IDLE);
-  const touchStartPosRef = useRef({ x: 0, y: 0, time: 0 });
-  const doubleTapTimerRef = useRef(null);
-  const scrollAxisRef = useRef(null);
 
   const trackpadResponder = useMemo(
     () =>
@@ -887,35 +891,29 @@ export default function App() {
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: (evt) => {
           const centroid = getTouchCentroid(evt);
-          const now = Date.now();
           lastTouchPosRef.current = centroid;
+          touchStartTimeRef.current = Date.now();
+          movedRef.current = false;
+          scrollAxisRef.current = null;
+          accumMoveRef.current = { x: 0, y: 0 };
           pendingMoveRef.current = { x: 0, y: 0, touchCount: centroid ? centroid.count : 1 };
 
-          if (centroid && centroid.count === 1) {
-            if (gestureStateRef.current === GESTURE_TAP_WAIT) {
-              clearTimeout(doubleTapTimerRef.current);
-              gestureStateRef.current = GESTURE_DOUBLE_TAP_HOLD;
-              touchStartPosRef.current = { x: centroid.x, y: centroid.y, time: now };
-            } else {
-              gestureStateRef.current = GESTURE_SINGLE_TOUCH;
-              touchStartPosRef.current = { x: centroid.x, y: centroid.y, time: now };
-            }
-          } else if (centroid && centroid.count >= 2) {
-            if (gestureStateRef.current === GESTURE_SINGLE_TOUCH || gestureStateRef.current === GESTURE_TAP_WAIT || gestureStateRef.current === GESTURE_IDLE) {
-              gestureStateRef.current = GESTURE_POTENTIAL_RIGHT_CLICK;
-              touchStartPosRef.current = { x: centroid.x, y: centroid.y, time: now };
-              scrollAxisRef.current = null;
-            }
+          multiTouchRef.current = centroid && centroid.count >= 2;
+
+          if (!multiTouchRef.current && gestureStateRef.current === GESTURE_TAP_WAIT) {
+            clearTimeout(doubleTapTimerRef.current);
+          } else {
+            gestureStateRef.current = GESTURE_IDLE; 
           }
+          
+          logGesture(`touchStart fingers=${centroid ? centroid.count : 0}`);
         },
-        onPanResponderMove: (evt, gestureState) => {
+        onPanResponderMove: (evt) => {
           const centroid = getTouchCentroid(evt);
           if (!centroid) return;
 
-          if (centroid.count >= 2 && gestureStateRef.current === GESTURE_SINGLE_TOUCH) {
-            gestureStateRef.current = GESTURE_POTENTIAL_RIGHT_CLICK;
-            touchStartPosRef.current = { x: centroid.x, y: centroid.y, time: Date.now() };
-            scrollAxisRef.current = null;
+          if (centroid.count >= 2) {
+            multiTouchRef.current = true;
           }
 
           if (!lastTouchPosRef.current || lastTouchPosRef.current.count !== centroid.count) {
@@ -927,101 +925,93 @@ export default function App() {
           const dy = centroid.y - lastTouchPosRef.current.y;
           lastTouchPosRef.current = centroid;
 
-          const distFromStart = Math.hypot(centroid.x - touchStartPosRef.current.x, centroid.y - touchStartPosRef.current.y);
+          accumMoveRef.current.x += dx;
+          accumMoveRef.current.y += dy;
 
-          if (gestureStateRef.current === GESTURE_POTENTIAL_RIGHT_CLICK) {
-            if (distFromStart > 8) {
-              gestureStateRef.current = GESTURE_SCROLL;
-            }
-          }
+          const totalDx = Math.abs(accumMoveRef.current.x);
+          const totalDy = Math.abs(accumMoveRef.current.y);
 
-          if (gestureStateRef.current === GESTURE_SCROLL) {
-            if (centroid.count < 2) {
-              gestureStateRef.current = GESTURE_IGNORE;
-              return;
+          if (multiTouchRef.current) {
+            if (totalDx > 6 || totalDy > 6) {
+              movedRef.current = true;
+              if (!scrollAxisRef.current) {
+                scrollAxisRef.current = totalDx > totalDy ? 'H' : 'V';
+                logGesture(`classified=${scrollAxisRef.current === 'H' ? 'HORIZONTAL_SCROLL' : 'VERTICAL_SCROLL'}`);
+              }
             }
-            if (!scrollAxisRef.current) {
-               if (Math.abs(gestureState.dx) > Math.abs(gestureState.dy)) {
-                 scrollAxisRef.current = 'H';
-               } else {
-                 scrollAxisRef.current = 'V';
-               }
-            }
-            if (scrollAxisRef.current === 'H' && Math.abs(dx) > 0.1) {
-              sendScroll(0, dx);
-            } else if (scrollAxisRef.current === 'V' && Math.abs(dy) > 0.1) {
-              sendScroll(-dy, 0);
+            if (movedRef.current) {
+              if (scrollAxisRef.current === 'V' && Math.abs(dy) > 0.1) {
+                sendScroll(-dy, 0);
+              } else if (scrollAxisRef.current === 'H' && Math.abs(dx) > 0.1) {
+                sendScroll(0, dx);
+              }
             }
             return;
           }
 
-          if (gestureStateRef.current === GESTURE_DOUBLE_TAP_HOLD) {
-            if (distFromStart > 5) {
-              gestureStateRef.current = GESTURE_DRAGGING;
-              sendDrag(true, 'left');
-            }
+          if (totalDx > 4 || totalDy > 4) {
+            movedRef.current = true;
           }
 
-          if (gestureStateRef.current === GESTURE_DRAGGING) {
+          if (movedRef.current && gestureStateRef.current === GESTURE_TAP_WAIT) {
+            gestureStateRef.current = GESTURE_DRAGGING;
+            logGesture('classified=DRAGGING');
+            sendDrag(true, 'left');
+          }
+
+          if (Math.abs(dx) + Math.abs(dy) > 0.1) {
             sendMove(dx, dy);
-            return;
-          }
-
-          if (gestureStateRef.current === GESTURE_SINGLE_TOUCH) {
-            if (Math.abs(dx) + Math.abs(dy) > 0.1) {
-              sendMove(dx, dy);
-            } else {
-              touchDiagRef.current.lost += 1;
-            }
+          } else {
+            touchDiagRef.current.lost += 1;
           }
         },
         onPanResponderRelease: () => {
           flushPendingMove();
-          const now = Date.now();
-
-          if (gestureStateRef.current === GESTURE_SINGLE_TOUCH) {
-             const dist = Math.hypot(lastTouchPosRef.current.x - touchStartPosRef.current.x, lastTouchPosRef.current.y - touchStartPosRef.current.y);
-             const duration = now - touchStartPosRef.current.time;
-             if (dist < 10 && duration < 250) {
-                 gestureStateRef.current = GESTURE_TAP_WAIT;
-                 if (doubleTapTimerRef.current) clearTimeout(doubleTapTimerRef.current);
-                 doubleTapTimerRef.current = setTimeout(() => {
-                     if (gestureStateRef.current === GESTURE_TAP_WAIT) {
-                         sendClick('left');
-                         gestureStateRef.current = GESTURE_IDLE;
-                     }
-                 }, DOUBLE_TAP_WINDOW_MS);
-             } else {
-                 gestureStateRef.current = GESTURE_IDLE;
-             }
-          } else if (gestureStateRef.current === GESTURE_POTENTIAL_RIGHT_CLICK) {
-             const dist = Math.hypot(lastTouchPosRef.current.x - touchStartPosRef.current.x, lastTouchPosRef.current.y - touchStartPosRef.current.y);
-             const duration = now - touchStartPosRef.current.time;
-             if (dist <= 8 && duration < RIGHT_CLICK_WINDOW_MS) {
-                 sendClick('right');
-             }
-             gestureStateRef.current = GESTURE_IDLE;
-          } else if (gestureStateRef.current === GESTURE_DOUBLE_TAP_HOLD) {
-             const dist = Math.hypot(lastTouchPosRef.current.x - touchStartPosRef.current.x, lastTouchPosRef.current.y - touchStartPosRef.current.y);
-             const duration = now - touchStartPosRef.current.time;
-             if (dist < 10 && duration < 250) {
-                 sendClick('left');
-                 setTimeout(() => sendClick('left'), 50);
-             }
-             gestureStateRef.current = GESTURE_IDLE;
-          } else if (gestureStateRef.current === GESTURE_DRAGGING) {
-             sendDrag(false, 'left');
-             gestureStateRef.current = GESTURE_IDLE;
-          } else {
-             gestureStateRef.current = GESTURE_IDLE;
-          }
+          const duration = Date.now() - touchStartTimeRef.current;
           
+          logGesture(`touchEnd moved=${movedRef.current} multi=${multiTouchRef.current} state=${gestureStateRef.current}`);
+
+          if (gestureStateRef.current === GESTURE_DRAGGING) {
+            sendDrag(false, 'left');
+            gestureStateRef.current = GESTURE_IDLE;
+          } else if (!movedRef.current) {
+            if (multiTouchRef.current) {
+              if (duration < RIGHT_CLICK_WINDOW_MS) {
+                logGesture('classified=TWO_FINGER_TAP');
+                sendClick('right');
+              }
+              gestureStateRef.current = GESTURE_IDLE;
+            } else {
+              if (gestureStateRef.current === GESTURE_TAP_WAIT) {
+                logGesture('classified=DOUBLE_TAP');
+                sendClick('left');
+                setTimeout(() => sendClick('left'), 50);
+                gestureStateRef.current = GESTURE_IDLE;
+              } else {
+                if (duration < 250) {
+                  gestureStateRef.current = GESTURE_TAP_WAIT;
+                  doubleTapTimerRef.current = setTimeout(() => {
+                    if (gestureStateRef.current === GESTURE_TAP_WAIT) {
+                      logGesture('classified=SINGLE_TAP');
+                      sendClick('left');
+                      gestureStateRef.current = GESTURE_IDLE;
+                    }
+                  }, DOUBLE_TAP_WINDOW_MS);
+                } else {
+                  sendClick('left');
+                  gestureStateRef.current = GESTURE_IDLE;
+                }
+              }
+            }
+          } else {
+            gestureStateRef.current = GESTURE_IDLE;
+          }
           lastTouchPosRef.current = null;
         },
         onPanResponderTerminate: () => {
           flushPendingMove();
           if (gestureStateRef.current === GESTURE_DRAGGING) {
-             sendDrag(false, 'left');
+            sendDrag(false, 'left');
           }
           gestureStateRef.current = GESTURE_IDLE;
           lastTouchPosRef.current = null;
@@ -1033,9 +1023,12 @@ export default function App() {
   const scrollResponder = useMemo(
     () =>
       PanResponder.create({
+        onStartShouldSetPanResponderCapture: () => true,
+        onMoveShouldSetPanResponderCapture: () => true,
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: (evt) => {
+          logGesture('classified=SCROLL_STRIP');
           const touches = evt?.nativeEvent?.touches;
           lastScrollYRef.current = touches && touches[0] ? touches[0].pageY : null;
         },
@@ -1049,7 +1042,7 @@ export default function App() {
           const delta = currentY - lastScrollYRef.current;
           lastScrollYRef.current = currentY;
           if (Math.abs(delta) > 0.1) {
-            sendScroll(-delta);
+            sendScroll(-delta, 0);
           }
         },
         onPanResponderRelease: () => {
