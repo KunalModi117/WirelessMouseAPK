@@ -881,6 +881,8 @@ export default function App() {
   
   const lastTouchPosRef = useRef(null);
   const lastScrollYRef = useRef(null);
+  const activeTouchIdRef = useRef(null);
+  const maxFingersRef = useRef(0);
 
   const trackpadResponder = useMemo(
     () =>
@@ -894,9 +896,11 @@ export default function App() {
           movedRef.current = false;
           scrollAxisRef.current = null;
           accumMoveRef.current = { x: 0, y: 0 };
-          pendingMoveRef.current = { x: 0, y: 0, touchCount: centroid ? centroid.count : 1 };
+          const count = centroid ? centroid.count : 1;
+          pendingMoveRef.current = { x: 0, y: 0, touchCount: count };
 
-          multiTouchRef.current = centroid && centroid.count >= 2;
+          maxFingersRef.current = count;
+          multiTouchRef.current = count >= 2;
 
           if (!multiTouchRef.current && gestureStateRef.current === GESTURE_TAP_WAIT) {
             clearTimeout(doubleTapTimerRef.current);
@@ -904,18 +908,28 @@ export default function App() {
             gestureStateRef.current = GESTURE_IDLE; 
           }
           
-          logGesture(`touchStart fingers=${centroid ? centroid.count : 0}`);
+          logGesture(`touchStart fingers=${count}`);
         },
         onPanResponderMove: (evt) => {
           const centroid = getTouchCentroid(evt);
           if (!centroid) return;
+
+          if (centroid.count > maxFingersRef.current) {
+            maxFingersRef.current = centroid.count;
+            logGesture(`maxFingers=${maxFingersRef.current}`);
+          }
 
           if (centroid.count >= 2) {
             multiTouchRef.current = true;
           }
 
           if (!lastTouchPosRef.current || lastTouchPosRef.current.count !== centroid.count) {
+            logGesture(`touchCount transition ${lastTouchPosRef.current ? lastTouchPosRef.current.count : 0} -> ${centroid.count}`);
             lastTouchPosRef.current = centroid;
+            logGesture('baseline reset');
+            accumMoveRef.current = { x: 0, y: 0 };
+            scrollAxisRef.current = null;
+            movedRef.current = false;
             return;
           }
 
@@ -967,13 +981,13 @@ export default function App() {
           flushPendingMove();
           const duration = Date.now() - touchStartTimeRef.current;
           
-          logGesture(`touchEnd moved=${movedRef.current} multi=${multiTouchRef.current} state=${gestureStateRef.current}`);
+          logGesture(`touchEnd moved=${movedRef.current} maxFingers=${maxFingersRef.current} state=${gestureStateRef.current}`);
 
           if (gestureStateRef.current === GESTURE_DRAGGING) {
             sendDrag(false, 'left');
             gestureStateRef.current = GESTURE_IDLE;
           } else if (!movedRef.current) {
-            if (multiTouchRef.current) {
+            if (maxFingersRef.current >= 2) {
               if (duration < RIGHT_CLICK_WINDOW_MS) {
                 logGesture('classified=TWO_FINGER_TAP');
                 sendClick('right');
@@ -1026,13 +1040,20 @@ export default function App() {
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: (evt) => {
-          logGesture('classified=SCROLL_STRIP');
-          const touches = evt?.nativeEvent?.touches;
-          lastScrollYRef.current = touches && touches[0] ? touches[0].pageY : null;
+          const activeTouch = evt?.nativeEvent?.changedTouches?.[0] || evt?.nativeEvent?.touches?.[0];
+          if (activeTouch) {
+            activeTouchIdRef.current = activeTouch.identifier;
+            lastScrollYRef.current = activeTouch.pageY;
+            logGesture(`scrollStrip activeTouch=${activeTouch.identifier}`);
+          } else {
+            activeTouchIdRef.current = null;
+            lastScrollYRef.current = null;
+          }
         },
         onPanResponderMove: (evt) => {
-          const touches = evt?.nativeEvent?.touches;
-          const currentY = touches && touches[0] ? touches[0].pageY : null;
+          const touches = evt?.nativeEvent?.touches || [];
+          const activeTouch = touches.find(t => t.identifier === activeTouchIdRef.current) || touches[0];
+          const currentY = activeTouch ? activeTouch.pageY : null;
           if (currentY === null || lastScrollYRef.current === null) {
             lastScrollYRef.current = currentY;
             return;
@@ -1044,9 +1065,11 @@ export default function App() {
           }
         },
         onPanResponderRelease: () => {
+          activeTouchIdRef.current = null;
           lastScrollYRef.current = null;
         },
         onPanResponderTerminate: () => {
+          activeTouchIdRef.current = null;
           lastScrollYRef.current = null;
         }
       }),
