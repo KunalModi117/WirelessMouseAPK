@@ -385,127 +385,108 @@ export default function App() {
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(settings)).catch(() => {});
   }, [settings]);
 
+  const isDiscoveryRunningRef = useRef(false);
+
   // Connection Discovery Manager Effect (Primary: UDP Discovery, Fallback: HTTP Subnet Scan)
   useEffect(() => {
-    if (!discoveryEnabled || manualMode) {
+    if (!discoveryEnabled || manualMode || connectionStatus === 'connected') {
+      if (connectionStatus === 'connected') {
+        addDebugLog('info', '[MOUSE-DISCOVERY]', 'Discovery stopped: connected');
+      }
       return;
     }
     let isCancelled = false;
 
     const performDiscovery = async () => {
-      // Step 1: Run Primary UDP Discovery
-      const udpResult = await runUdpDiscovery(addDebugLog);
-
-      if (isCancelled) return;
-
-      if (udpResult.success && udpResult.servers.length > 0) {
-        setDiscovered(udpResult.servers);
-
-        // Check if saved target has deviceId matching a discovered server at a new IP
-        if (target && target.deviceId) {
-          const match = udpResult.servers.find((s) => s.deviceId === target.deviceId);
-          if (match && match.ip !== target.ip) {
-            addDebugLog(
-              'info',
-              '[MOUSE-DISCOVERY]',
-              `Saved device ID ${target.deviceId} found at new IP ${match.ip} (previously ${target.ip}). Updating saved target.`
-            );
-            safeSaveLastTarget(match);
-            setTarget(match);
-            connectToServer(match);
-            return;
-          }
-        }
+      if (isCancelled || connectionStatus === 'connected' || isDiscoveryRunningRef.current) {
         return;
       }
+      isDiscoveryRunningRef.current = true;
+      addDebugLog('info', '[MOUSE-DISCOVERY]', 'Discovery started');
 
-      // Step 2: Fallback to HTTP Subnet Scan if UDP Discovery found nothing
-      addDebugLog('info', '[MOUSE-DISCOVERY]', 'UDP discovery yielded 0 valid servers. Running HTTP subnet discovery fallback.');
+      try {
+        // Step 1: Run Primary UDP Discovery
+        const udpResult = await runUdpDiscovery(addDebugLog);
 
-      const subnets = await detectLocalSubnetPrefixes(target?.ip, manualDraft?.ip);
-      const candidateIps = ['127.0.0.1', '10.0.2.2'];
-      for (const prefix of subnets) {
-        for (let i = 1; i <= 254; i++) {
-          candidateIps.push(`${prefix}.${i}`);
+        if (isCancelled || connectionStatus === 'connected') return;
+
+        if (udpResult.success && udpResult.servers.length > 0) {
+          setDiscovered(udpResult.servers);
+
+          // Check if saved target has deviceId matching a discovered server at a new IP
+          if (target && target.deviceId) {
+            const match = udpResult.servers.find((s) => s.deviceId === target.deviceId);
+            if (match && match.ip !== target.ip) {
+              addDebugLog(
+                'info',
+                '[MOUSE-DISCOVERY]',
+                `Saved device ID ${target.deviceId} found at new IP ${match.ip} (previously ${target.ip}). Updating saved target.`
+              );
+              safeSaveLastTarget(match);
+              setTarget(match);
+              connectToServer(match);
+              return;
+            }
+          }
+          return;
         }
-      }
 
-      const counters = {
-        candidates: candidateIps.length,
-        started: 0,
-        completed: 0,
-        timeouts: 0,
-        failed: 0,
-        httpResponses: 0,
-        http200: 0,
-        validServers: 0,
-        otherHttp: 0,
-        aborted: 0
-      };
+        // Step 2: Fallback to HTTP Subnet Scan if UDP Discovery found nothing
+        if (isCancelled || connectionStatus === 'connected') return;
 
-      const foundList = [];
-      const batchSize = 50;
+        addDebugLog('info', '[MOUSE-DISCOVERY]', 'UDP discovery yielded 0 valid servers. Running HTTP subnet discovery fallback.');
 
-      for (let i = 0; i < candidateIps.length; i += batchSize) {
-        if (isCancelled) {
-          counters.aborted += candidateIps.length - i;
-          break;
+        const subnets = await detectLocalSubnetPrefixes(target?.ip, manualDraft?.ip);
+        const candidateIps = ['127.0.0.1', '10.0.2.2'];
+        for (const prefix of subnets) {
+          for (let i = 1; i <= 254; i++) {
+            candidateIps.push(`${prefix}.${i}`);
+          }
         }
-        const batch = candidateIps.slice(i, i + batchSize);
-        await Promise.all(
-          batch.map(async (ip) => {
-            counters.started += 1;
-            try {
-              const controller = new AbortController();
-              const timer = setTimeout(() => controller.abort(), 700);
-              const res = await fetch(`http://${ip}:41235/health`, {
-                signal: controller.signal
-              });
-              clearTimeout(timer);
-              counters.completed += 1;
-              counters.httpResponses += 1;
 
-              if (res.status === 200) {
-                counters.http200 += 1;
-              } else {
-                counters.otherHttp += 1;
-              }
+        const foundList = [];
+        const batchSize = 50;
 
-              if (res.ok) {
-                const data = await res.json();
-                if (data && data.app === 'WirelessMouseKeyboardRemote') {
-                  counters.validServers += 1;
-                  const targetObj = normalizeDiscoveredTarget(data, ip);
-                  if (!foundList.some((item) => (item.deviceId && item.deviceId === targetObj.deviceId) || item.ip === targetObj.ip)) {
-                    foundList.push(targetObj);
-                    if (!isCancelled) {
-                      setDiscovered([...foundList]);
-                      addDebugLog(
-                        'info',
-                        'Discovered PC server via HTTP fallback',
-                        `${targetObj.host ? `${targetObj.host} (${targetObj.ip})` : targetObj.ip}:${targetObj.wsPort}`
-                      );
+        for (let i = 0; i < candidateIps.length; i += batchSize) {
+          if (isCancelled || connectionStatus === 'connected') {
+            break;
+          }
+          const batch = candidateIps.slice(i, i + batchSize);
+          await Promise.all(
+            batch.map(async (ip) => {
+              if (isCancelled || connectionStatus === 'connected') return;
+              try {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 700);
+                const res = await fetch(`http://${ip}:41235/health`, {
+                  signal: controller.signal
+                });
+                clearTimeout(timer);
+
+                if (res.ok) {
+                  const data = await res.json();
+                  if (data && data.app === 'WirelessMouseKeyboardRemote') {
+                    const targetObj = normalizeDiscoveredTarget(data, ip);
+                    if (!foundList.some((item) => (item.deviceId && item.deviceId === targetObj.deviceId) || item.ip === targetObj.ip)) {
+                      foundList.push(targetObj);
+                      if (!isCancelled && connectionStatus !== 'connected') {
+                        setDiscovered([...foundList]);
+                        addDebugLog(
+                          'info',
+                          'Discovered PC server via HTTP fallback',
+                          `${targetObj.host ? `${targetObj.host} (${targetObj.ip})` : targetObj.ip}:${targetObj.wsPort}`
+                        );
+                      }
                     }
                   }
                 }
-              }
-            } catch (err) {
-              counters.completed += 1;
-              if (err && err.name === 'AbortError') {
-                counters.timeouts += 1;
-              } else {
-                counters.failed += 1;
-              }
-            }
-          })
-        );
+              } catch (_) {}
+            })
+          );
+        }
+      } finally {
+        isDiscoveryRunningRef.current = false;
       }
-
-      addDebugLog(
-        'info',
-        '[MOUSE-DISCOVERY-RESULT]',
-        `Mode: HTTP Fallback | Candidates: ${counters.candidates} | Valid servers: ${counters.validServers}`
-      );
     };
 
     performDiscovery();
@@ -515,7 +496,7 @@ export default function App() {
       isCancelled = true;
       clearInterval(interval);
     };
-  }, [discoveryEnabled, manualMode, target?.ip, target?.deviceId]);
+  }, [discoveryEnabled, manualMode, connectionStatus, target?.ip, target?.deviceId]);
 
   useEffect(() => {
     return () => {
