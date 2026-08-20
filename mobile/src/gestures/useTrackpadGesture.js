@@ -113,23 +113,75 @@ export function useTrackpadGesture({
             return;
           }
 
-          // 1-to-2 finger transition check:
-          // When 2nd finger arrives, reset baseline for clean 2-finger scroll
-          if (lastCentroidRef.current.count < 2 && currentCount >= 2) {
-            logGesture(`touchCount transition ${lastCentroidRef.current.count} -> ${currentCount}`);
-            logGesture('baseline reset on 2nd finger arrival');
+          // -------------------------------------------------------------
+          // MULTI-TOUCH / TWO-FINGER GESTURE PROCESSING
+          // -------------------------------------------------------------
+          if (multiTouchRef.current || currentCount >= 2) {
+            // While BOTH fingers are active down:
+            if (currentCount >= 2) {
+              // 1-to-2 finger transition check
+              if (lastCentroidRef.current.count < 2) {
+                logGesture(`touchCount transition ${lastCentroidRef.current.count} -> ${currentCount}`);
+                logGesture('baseline reset on 2nd finger arrival');
 
-            lastCentroidRef.current = centroid;
-            accumScrollMoveRef.current = { x: 0, y: 0 };
-            scrollAxisRef.current = null;
-            movedRef.current = false;
+                lastCentroidRef.current = centroid;
+                accumScrollMoveRef.current = { x: 0, y: 0 };
+                scrollAxisRef.current = null;
+                movedRef.current = false;
 
-            if (onResetMoveCount) {
-              onResetMoveCount(currentCount);
+                if (onResetMoveCount) {
+                  onResetMoveCount(currentCount);
+                }
+                return;
+              }
+
+              const dx = centroid.x - lastCentroidRef.current.x;
+              const dy = centroid.y - lastCentroidRef.current.y;
+              lastCentroidRef.current = centroid;
+
+              accumScrollMoveRef.current.x += dx;
+              accumScrollMoveRef.current.y += dy;
+
+              const totalDx = Math.abs(accumScrollMoveRef.current.x);
+              const totalDy = Math.abs(accumScrollMoveRef.current.y);
+
+              if (totalDx > 5 || totalDy > 5) {
+                movedRef.current = true;
+                if (!scrollAxisRef.current) {
+                  if (totalDx > 1.5 * totalDy) {
+                    scrollAxisRef.current = 'H';
+                  } else if (totalDy > 1.5 * totalDx) {
+                    scrollAxisRef.current = 'V';
+                  } else {
+                    scrollAxisRef.current = 'D';
+                  }
+                  logGesture(`classified=${scrollAxisRef.current === 'H' ? 'HORIZONTAL_SCROLL' : scrollAxisRef.current === 'V' ? 'VERTICAL_SCROLL' : 'DIAGONAL_SCROLL'}`);
+                }
+              }
+
+              if (movedRef.current) {
+                if (scrollAxisRef.current === 'V') {
+                  if (Math.abs(dy) > 0.01 && onScroll) onScroll(-dy * 3.0, 0);
+                } else if (scrollAxisRef.current === 'H') {
+                  if (Math.abs(dx) > 0.01 && onScroll) onScroll(0, dx * 3.0);
+                } else if (scrollAxisRef.current === 'D') {
+                  if ((Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) && onScroll) {
+                    onScroll(-dy * 3.0, dx * 3.0);
+                  }
+                }
+              }
+              return;
             }
+
+            // Finger release phase during multi-touch session (currentCount dropped to 1):
+            // Do NOT compute centroid delta or set movedRef = true from 2->1 release jump!
+            lastCentroidRef.current = centroid;
             return;
           }
 
+          // -------------------------------------------------------------
+          // SINGLE-FINGER MOUSE MOVEMENT & DRAGGING
+          // -------------------------------------------------------------
           const dx = centroid.x - lastCentroidRef.current.x;
           const dy = centroid.y - lastCentroidRef.current.y;
           lastCentroidRef.current = centroid;
@@ -140,41 +192,6 @@ export function useTrackpadGesture({
           const totalDx = Math.abs(accumScrollMoveRef.current.x);
           const totalDy = Math.abs(accumScrollMoveRef.current.y);
 
-          // -------------------------------------------------------------
-          // TWO-FINGER SCROLLING (Vertical & Horizontal & Diagonal)
-          // -------------------------------------------------------------
-          if (multiTouchRef.current || currentCount >= 2) {
-            if (totalDx > 4 || totalDy > 4) {
-              movedRef.current = true;
-              if (!scrollAxisRef.current) {
-                if (totalDx > 1.5 * totalDy) {
-                  scrollAxisRef.current = 'H';
-                } else if (totalDy > 1.5 * totalDx) {
-                  scrollAxisRef.current = 'V';
-                } else {
-                  scrollAxisRef.current = 'D';
-                }
-                logGesture(`classified=${scrollAxisRef.current === 'H' ? 'HORIZONTAL_SCROLL' : scrollAxisRef.current === 'V' ? 'VERTICAL_SCROLL' : 'DIAGONAL_SCROLL'}`);
-              }
-            }
-
-            if (movedRef.current) {
-              if (scrollAxisRef.current === 'V') {
-                if (Math.abs(dy) > 0.01 && onScroll) onScroll(-dy * 3.0, 0);
-              } else if (scrollAxisRef.current === 'H') {
-                if (Math.abs(dx) > 0.01 && onScroll) onScroll(0, dx * 3.0);
-              } else if (scrollAxisRef.current === 'D') {
-                if ((Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) && onScroll) {
-                  onScroll(-dy * 3.0, dx * 3.0);
-                }
-              }
-            }
-            return;
-          }
-
-          // -------------------------------------------------------------
-          // SINGLE-FINGER MOUSE MOVEMENT & DRAGGING
-          // -------------------------------------------------------------
           if (totalDx > 3 || totalDy > 3) {
             movedRef.current = true;
           }
