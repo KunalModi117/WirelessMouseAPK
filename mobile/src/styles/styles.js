@@ -379,6 +379,41 @@ export const styles = StyleSheet.create({
     fontWeight: '600'
   },
 
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center'
+  },
+  refreshIconBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  refreshIconBtnDisabled: {
+    opacity: 0.6
+  },
+  refreshIconText: {
+    fontSize: 14
+  },
+  searchingCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0d111a',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)'
+  },
+  searchingText: {
+    color: '#94a3b8',
+    fontSize: 14,
+    fontWeight: '500'
+  },
+
   /* DISCOVERED PC LIST */
   emptyCard: {
     backgroundColor: '#0d111a',
@@ -388,10 +423,32 @@ export const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.06)'
   },
+  emptyTitleText: {
+    color: '#f8fafc',
+    fontSize: 16,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: 4
+  },
   emptyCardText: {
     color: '#64748b',
     fontSize: 14,
     textAlign: 'center'
+  },
+  emptyRefreshBtn: {
+    backgroundColor: 'rgba(10, 132, 255, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(10, 132, 255, 0.3)',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 12,
+    marginTop: 12,
+    alignItems: 'center'
+  },
+  emptyRefreshBtnText: {
+    color: '#0a84ff',
+    fontSize: 14,
+    fontWeight: '600'
   },
   discoveredRow: {
     flexDirection: 'row',

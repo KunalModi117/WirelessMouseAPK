@@ -105,6 +105,8 @@ export default function App() {
           connectionStatus={connection.connectionStatus}
           connectedHost={connection.connectedHost}
           discovered={connection.discovered}
+          discoveryStatus={connection.discoveryStatus}
+          onRefreshDiscovery={connection.refreshDiscovery}
           manualDraft={connection.manualDraft}
           setManualDraft={connection.setManualDraft}
           onConnectDiscovered={connection.connectDiscovered}
