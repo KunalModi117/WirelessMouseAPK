@@ -33,6 +33,9 @@
         "projectId": "91fcd97c-f150-4d8d-9c3b-03c377914f26"
       }
     },
-    "owner": "kunalmodi117"
+    "owner": "kunalmodi117",
+    "plugins": [
+      "expo-font"
+    ]
   }
 }
