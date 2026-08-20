@@ -6,7 +6,7 @@ const GESTURE_TAP_WAIT = 'TAP_WAIT';
 const GESTURE_DRAGGING = 'DRAGGING';
 
 const DOUBLE_TAP_WINDOW_MS = 200;
-const RIGHT_CLICK_WINDOW_MS = 400;
+const RIGHT_CLICK_WINDOW_MS = 450;
 
 export function extractTouches(evt) {
   const native = evt?.nativeEvent;
@@ -87,9 +87,7 @@ export function useTrackpadGesture({
             onResetMoveCount(count);
           }
 
-          if (!multiTouchRef.current && gestureStateRef.current === GESTURE_TAP_WAIT) {
-            // Keep wait state for potential double-tap drag
-          } else {
+          if (multiTouchRef.current) {
             gestureStateRef.current = GESTURE_IDLE;
           }
 
@@ -109,13 +107,18 @@ export function useTrackpadGesture({
             multiTouchRef.current = true;
           }
 
-          // TRANSITION CHECK: finger count transition or arrival of second finger
-          if (!lastCentroidRef.current || lastCentroidRef.current.count !== currentCount) {
-            const prevCount = lastCentroidRef.current ? lastCentroidRef.current.count : 0;
-            logGesture(`touchCount transition ${prevCount} -> ${currentCount}`);
-            logGesture('baseline reset');
+          // Initial centroid initialization if missing
+          if (!lastCentroidRef.current) {
+            lastCentroidRef.current = centroid;
+            return;
+          }
 
-            // Establish fresh baseline on transition
+          // 1-to-2 finger transition check:
+          // When 2nd finger arrives, reset baseline for clean 2-finger scroll
+          if (lastCentroidRef.current.count < 2 && currentCount >= 2) {
+            logGesture(`touchCount transition ${lastCentroidRef.current.count} -> ${currentCount}`);
+            logGesture('baseline reset on 2nd finger arrival');
+
             lastCentroidRef.current = centroid;
             accumScrollMoveRef.current = { x: 0, y: 0 };
             scrollAxisRef.current = null;
@@ -137,14 +140,16 @@ export function useTrackpadGesture({
           const totalDx = Math.abs(accumScrollMoveRef.current.x);
           const totalDy = Math.abs(accumScrollMoveRef.current.y);
 
-          // Handle Multi-Touch Scroll (Two-finger)
+          // -------------------------------------------------------------
+          // TWO-FINGER SCROLLING (Vertical & Horizontal & Diagonal)
+          // -------------------------------------------------------------
           if (multiTouchRef.current || currentCount >= 2) {
-            if (totalDx > 6 || totalDy > 6) {
+            if (totalDx > 4 || totalDy > 4) {
               movedRef.current = true;
               if (!scrollAxisRef.current) {
-                if (totalDx > 1.8 * totalDy) {
+                if (totalDx > 1.5 * totalDy) {
                   scrollAxisRef.current = 'H';
-                } else if (totalDy > 1.8 * totalDx) {
+                } else if (totalDy > 1.5 * totalDx) {
                   scrollAxisRef.current = 'V';
                 } else {
                   scrollAxisRef.current = 'D';
@@ -154,19 +159,23 @@ export function useTrackpadGesture({
             }
 
             if (movedRef.current) {
-              if (scrollAxisRef.current === 'V' && Math.abs(dy) > 0.05) {
-                if (onScroll) onScroll(-dy * 2.5, 0);
-              } else if (scrollAxisRef.current === 'H' && Math.abs(dx) > 0.05) {
-                if (onScroll) onScroll(0, dx * 2.5);
-              } else if (scrollAxisRef.current === 'D' && (Math.abs(dx) > 0.05 || Math.abs(dy) > 0.05)) {
-                if (onScroll) onScroll(-dy * 2.5, dx * 2.5);
+              if (scrollAxisRef.current === 'V') {
+                if (Math.abs(dy) > 0.01 && onScroll) onScroll(-dy * 3.0, 0);
+              } else if (scrollAxisRef.current === 'H') {
+                if (Math.abs(dx) > 0.01 && onScroll) onScroll(0, dx * 3.0);
+              } else if (scrollAxisRef.current === 'D') {
+                if ((Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) && onScroll) {
+                  onScroll(-dy * 3.0, dx * 3.0);
+                }
               }
             }
             return;
           }
 
-          // Handle Single-Finger Mouse Movement & Dragging
-          if (totalDx > 4 || totalDy > 4) {
+          // -------------------------------------------------------------
+          // SINGLE-FINGER MOUSE MOVEMENT & DRAGGING
+          // -------------------------------------------------------------
+          if (totalDx > 3 || totalDy > 3) {
             movedRef.current = true;
           }
 
@@ -176,7 +185,7 @@ export function useTrackpadGesture({
             if (onDrag) onDrag(true, 'left');
           }
 
-          if (Math.abs(dx) + Math.abs(dy) > 0.05) {
+          if (Math.abs(dx) + Math.abs(dy) > 0.01) {
             if (onMove) onMove(dx, dy);
           } else {
             if (onIncrementLostTouch) onIncrementLostTouch();
@@ -188,21 +197,24 @@ export function useTrackpadGesture({
           const finalFingers = maxFingersRef.current;
 
           logGesture(
-            `touchEnd moved=${movedRef.current} maxFingers=${finalFingers} state=${gestureStateRef.current}`
+            `touchEnd moved=${movedRef.current} maxFingers=${finalFingers} duration=${duration}ms state=${gestureStateRef.current}`
           );
 
           if (gestureStateRef.current === GESTURE_DRAGGING) {
             if (onDrag) onDrag(false, 'left');
             gestureStateRef.current = GESTURE_IDLE;
           } else if (!movedRef.current) {
+            // 2-FINGER TAP -> RIGHT CLICK
             if (finalFingers >= 2) {
               if (duration < RIGHT_CLICK_WINDOW_MS) {
-                logGesture('classified=TWO_FINGER_TAP');
+                logGesture('classified=TWO_FINGER_TAP_RIGHT_CLICK');
                 if (onClick) onClick('right');
               }
               gestureStateRef.current = GESTURE_IDLE;
             } else {
+              // 1-FINGER TAP -> LEFT CLICK / DOUBLE TAP
               if (gestureStateRef.current === GESTURE_TAP_WAIT) {
+                if (doubleTapTimerRef.current) clearTimeout(doubleTapTimerRef.current);
                 logGesture('classified=DOUBLE_TAP');
                 if (onClick) onClick('left');
                 setTimeout(() => {
@@ -261,10 +273,10 @@ export function useTrackpadGesture({
         onPanResponderGrant: (evt) => {
           const touches = extractTouches(evt);
           const activeTouch = touches[0];
-          if (activeTouch && activeTouch.identifier !== undefined) {
+          if (activeTouch) {
             scrollActiveTouchIdRef.current = activeTouch.identifier;
             scrollLastYRef.current = activeTouch.pageY;
-            logGesture(`scrollStrip activeTouch=${activeTouch.identifier}`);
+            logGesture(`scrollStrip activeTouch=${activeTouch.identifier} y=${activeTouch.pageY}`);
           } else {
             scrollActiveTouchIdRef.current = null;
             scrollLastYRef.current = null;
@@ -280,21 +292,23 @@ export function useTrackpadGesture({
           }
           if (!activeTouch) {
             activeTouch = touches[0];
-            if (activeTouch && activeTouch.identifier !== undefined) {
+            if (activeTouch) {
               scrollActiveTouchIdRef.current = activeTouch.identifier;
             }
           }
 
-          const currentY = activeTouch ? activeTouch.pageY : null;
-          if (currentY === null || scrollLastYRef.current === null) {
+          if (!activeTouch) return;
+
+          const currentY = activeTouch.pageY;
+          if (scrollLastYRef.current === null) {
             scrollLastYRef.current = currentY;
             return;
           }
 
-          const delta = currentY - scrollLastYRef.current;
+          const deltaY = currentY - scrollLastYRef.current;
           scrollLastYRef.current = currentY;
-          if (Math.abs(delta) > 0.05) {
-            if (onScroll) onScroll(-delta * 2.5, 0);
+          if (Math.abs(deltaY) > 0.01) {
+            if (onScroll) onScroll(-deltaY * 3.0, 0);
           }
         },
         onPanResponderRelease: () => {

@@ -35,7 +35,7 @@ function createSubPixelAccumulator() {
   };
 }
 
-function createScrollAccumulator(threshold = 10) {
+function createScrollAccumulator(threshold = 3) {
   let accY = 0;
   let accX = 0;
 
@@ -85,7 +85,7 @@ function createScrollAccumulator(threshold = 10) {
 function createWindowsFallbackController() {
   const isWindows = process.platform === 'win32';
   const accumulator = createSubPixelAccumulator();
-  const scrollAccumulator = createScrollAccumulator(10);
+  const scrollAccumulator = createScrollAccumulator(3);
   let child = null;
 
   function escapeSendKeys(text) {
@@ -278,7 +278,7 @@ while ($line = [Console]::ReadLine()) {
 function createLinuxFallbackController() {
   const isLinux = process.platform === 'linux';
   const accumulator = createSubPixelAccumulator();
-  const scrollAccumulator = createScrollAccumulator(10);
+  const scrollAccumulator = createScrollAccumulator(3);
   let pythonChild = null;
 
   let pyDiagStats = { recvMoves: 0, injectedBatches: 0, maxQueue: 0, totalDx: 0, totalDy: 0, lastReceivedAt: 0 };
@@ -611,7 +611,7 @@ while True:
 function createMacFallbackController() {
   const isMac = process.platform === 'darwin';
   const accumulator = createSubPixelAccumulator();
-  const scrollAccumulator = createScrollAccumulator(10);
+  const scrollAccumulator = createScrollAccumulator(3);
   let pythonChild = null;
 
   const pythonScript = `
@@ -866,7 +866,7 @@ function resolveRobotKey(key) {
 function createNutController() {
   const { mouse, keyboard, Button, Key, Point } = nutJs;
   const accumulator = createSubPixelAccumulator();
-  const scrollAccumulator = createScrollAccumulator(10);
+  const scrollAccumulator = createScrollAccumulator(3);
   let dragActive = false;
 
   return {
@@ -946,7 +946,7 @@ function createNutController() {
 function createRobotController() {
   const robot = robotjs;
   const accumulator = createSubPixelAccumulator();
-  const scrollAccumulator = createScrollAccumulator(10);
+  const scrollAccumulator = createScrollAccumulator(3);
   let dragActive = false;
 
   return {
@@ -1047,7 +1047,7 @@ function createLinuxDirectController() {
   }
 
   const accumulator = createSubPixelAccumulator();
-  const scrollAccumulator = createScrollAccumulator(10);
+  const scrollAccumulator = createScrollAccumulator(3);
 
   let directDiagStats = {
     receivedMoves: 0,
