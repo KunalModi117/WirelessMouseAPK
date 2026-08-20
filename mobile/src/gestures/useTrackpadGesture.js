@@ -8,8 +8,18 @@ const GESTURE_DRAGGING = 'DRAGGING';
 const DOUBLE_TAP_WINDOW_MS = 200;
 const RIGHT_CLICK_WINDOW_MS = 400;
 
+export function extractTouches(evt) {
+  const native = evt?.nativeEvent;
+  if (!native) return [];
+  const touches = native.touches || [];
+  if (touches.length > 0) {
+    return touches;
+  }
+  return native.changedTouches || [];
+}
+
 export function getTouchCentroid(evt) {
-  const touches = evt?.nativeEvent?.touches;
+  const touches = extractTouches(evt);
   if (!touches || touches.length === 0) {
     return null;
   }
@@ -39,16 +49,17 @@ export function useTrackpadGesture({
   const gestureStateRef = useRef(GESTURE_IDLE);
   const doubleTapTimerRef = useRef(null);
   const touchStartTimeRef = useRef(0);
-  const scrollAxisRef = useRef(null);
-  const accumMoveRef = useRef({ x: 0, y: 0 });
 
-  const lastTouchPosRef = useRef(null);
-  const lastScrollYRef = useRef(null);
-  const activeTouchIdRef = useRef(null);
+  const scrollAxisRef = useRef(null);
+  const accumScrollMoveRef = useRef({ x: 0, y: 0 });
+
+  const lastCentroidRef = useRef(null);
   const maxFingersRef = useRef(0);
-  const touchIdsRef = useRef(new Set());
   const movedRef = useRef(false);
   const multiTouchRef = useRef(false);
+
+  const scrollActiveTouchIdRef = useRef(null);
+  const scrollLastYRef = useRef(null);
 
   function logGesture(msg) {
     if (onLog) {
@@ -63,117 +74,98 @@ export function useTrackpadGesture({
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: (evt) => {
           const centroid = getTouchCentroid(evt);
-          lastTouchPosRef.current = centroid;
+          lastCentroidRef.current = centroid;
           touchStartTimeRef.current = Date.now();
           movedRef.current = false;
           scrollAxisRef.current = null;
-          accumMoveRef.current = { x: 0, y: 0 };
+          accumScrollMoveRef.current = { x: 0, y: 0 };
           const count = centroid ? centroid.count : 1;
+          maxFingersRef.current = count;
+          multiTouchRef.current = count >= 2;
+
           if (onResetMoveCount) {
             onResetMoveCount(count);
           }
 
-          touchIdsRef.current = new Set();
-          const native = evt?.nativeEvent;
-          if (native?.touches) {
-            for (let i = 0; i < native.touches.length; i++) {
-              if (native.touches[i].identifier !== undefined) {
-                touchIdsRef.current.add(native.touches[i].identifier);
-              }
-            }
-          }
-          if (native?.changedTouches) {
-            for (let i = 0; i < native.changedTouches.length; i++) {
-              if (native.changedTouches[i].identifier !== undefined) {
-                touchIdsRef.current.add(native.changedTouches[i].identifier);
-              }
-            }
-          }
-
-          const fingerCount = Math.max(count, touchIdsRef.current.size);
-          maxFingersRef.current = fingerCount;
-          multiTouchRef.current = fingerCount >= 2;
-
           if (!multiTouchRef.current && gestureStateRef.current === GESTURE_TAP_WAIT) {
-            clearTimeout(doubleTapTimerRef.current);
+            // Keep wait state for potential double-tap drag
           } else {
             gestureStateRef.current = GESTURE_IDLE;
           }
 
-          logGesture(`touchStart fingers=${fingerCount}`);
+          logGesture(`touchStart fingers=${count}`);
         },
         onPanResponderMove: (evt) => {
           const centroid = getTouchCentroid(evt);
           if (!centroid) return;
 
-          const native = evt?.nativeEvent;
-          if (native?.touches) {
-            for (let i = 0; i < native.touches.length; i++) {
-              if (native.touches[i].identifier !== undefined) {
-                touchIdsRef.current.add(native.touches[i].identifier);
-              }
-            }
-          }
-          if (native?.changedTouches) {
-            for (let i = 0; i < native.changedTouches.length; i++) {
-              if (native.changedTouches[i].identifier !== undefined) {
-                touchIdsRef.current.add(native.changedTouches[i].identifier);
-              }
-            }
-          }
-
-          const currentFingers = Math.max(centroid.count, touchIdsRef.current.size);
-          if (currentFingers > maxFingersRef.current) {
-            maxFingersRef.current = currentFingers;
+          const currentCount = centroid.count;
+          if (currentCount > maxFingersRef.current) {
+            maxFingersRef.current = currentCount;
             logGesture(`maxFingers=${maxFingersRef.current}`);
           }
 
-          if (currentFingers >= 2) {
+          if (currentCount >= 2) {
             multiTouchRef.current = true;
           }
 
-          if (!lastTouchPosRef.current || lastTouchPosRef.current.count !== centroid.count) {
-            logGesture(
-              `touchCount transition ${lastTouchPosRef.current ? lastTouchPosRef.current.count : 0} -> ${centroid.count}`
-            );
-            lastTouchPosRef.current = centroid;
+          // TRANSITION CHECK: finger count transition or arrival of second finger
+          if (!lastCentroidRef.current || lastCentroidRef.current.count !== currentCount) {
+            const prevCount = lastCentroidRef.current ? lastCentroidRef.current.count : 0;
+            logGesture(`touchCount transition ${prevCount} -> ${currentCount}`);
             logGesture('baseline reset');
-            accumMoveRef.current = { x: 0, y: 0 };
+
+            // Establish fresh baseline on transition
+            lastCentroidRef.current = centroid;
+            accumScrollMoveRef.current = { x: 0, y: 0 };
             scrollAxisRef.current = null;
             movedRef.current = false;
+
+            if (onResetMoveCount) {
+              onResetMoveCount(currentCount);
+            }
             return;
           }
 
-          const dx = centroid.x - lastTouchPosRef.current.x;
-          const dy = centroid.y - lastTouchPosRef.current.y;
-          lastTouchPosRef.current = centroid;
+          const dx = centroid.x - lastCentroidRef.current.x;
+          const dy = centroid.y - lastCentroidRef.current.y;
+          lastCentroidRef.current = centroid;
 
-          accumMoveRef.current.x += dx;
-          accumMoveRef.current.y += dy;
+          accumScrollMoveRef.current.x += dx;
+          accumScrollMoveRef.current.y += dy;
 
-          const totalDx = Math.abs(accumMoveRef.current.x);
-          const totalDy = Math.abs(accumMoveRef.current.y);
+          const totalDx = Math.abs(accumScrollMoveRef.current.x);
+          const totalDy = Math.abs(accumScrollMoveRef.current.y);
 
-          if (multiTouchRef.current) {
-            if (totalDx > 10 || totalDy > 10) {
+          // Handle Multi-Touch Scroll (Two-finger)
+          if (multiTouchRef.current || currentCount >= 2) {
+            if (totalDx > 6 || totalDy > 6) {
               movedRef.current = true;
               if (!scrollAxisRef.current) {
-                scrollAxisRef.current = totalDx > totalDy ? 'H' : 'V';
-                logGesture(
-                  `classified=${scrollAxisRef.current === 'H' ? 'HORIZONTAL_SCROLL' : 'VERTICAL_SCROLL'}`
-                );
+                if (totalDx > 1.8 * totalDy) {
+                  scrollAxisRef.current = 'H';
+                } else if (totalDy > 1.8 * totalDx) {
+                  scrollAxisRef.current = 'V';
+                } else {
+                  scrollAxisRef.current = 'D';
+                }
+                logGesture(`classified=${scrollAxisRef.current === 'H' ? 'HORIZONTAL_SCROLL' : scrollAxisRef.current === 'V' ? 'VERTICAL_SCROLL' : 'DIAGONAL_SCROLL'}`);
               }
             }
+
             if (movedRef.current) {
-              if (scrollAxisRef.current === 'V' && Math.abs(dy) > 0.1) {
+              if (scrollAxisRef.current === 'V' && Math.abs(dy) > 0.05) {
                 if (onScroll) onScroll(-dy * 2.5, 0);
-              } else if (scrollAxisRef.current === 'H' && Math.abs(dx) > 0.1) {
+              } else if (scrollAxisRef.current === 'H' && Math.abs(dx) > 0.05) {
                 if (onScroll) onScroll(0, dx * 2.5);
+              } else if (scrollAxisRef.current === 'D' && (Math.abs(dx) > 0.05 || Math.abs(dy) > 0.05)) {
+                if (onScroll) onScroll(-dy * 2.5, dx * 2.5);
               }
             }
             return;
           }
 
+          // Handle Single-Finger Mouse Movement & Dragging
           if (totalDx > 4 || totalDy > 4) {
             movedRef.current = true;
           }
@@ -184,7 +176,7 @@ export function useTrackpadGesture({
             if (onDrag) onDrag(true, 'left');
           }
 
-          if (Math.abs(dx) + Math.abs(dy) > 0.1) {
+          if (Math.abs(dx) + Math.abs(dy) > 0.05) {
             if (onMove) onMove(dx, dy);
           } else {
             if (onIncrementLostTouch) onIncrementLostTouch();
@@ -193,23 +185,7 @@ export function useTrackpadGesture({
         onPanResponderRelease: (evt) => {
           if (onFlushMove) onFlushMove();
           const duration = Date.now() - touchStartTimeRef.current;
-
-          const native = evt?.nativeEvent;
-          if (native?.touches) {
-            for (let i = 0; i < native.touches.length; i++) {
-              if (native.touches[i].identifier !== undefined) {
-                touchIdsRef.current.add(native.touches[i].identifier);
-              }
-            }
-          }
-          if (native?.changedTouches) {
-            for (let i = 0; i < native.changedTouches.length; i++) {
-              if (native.changedTouches[i].identifier !== undefined) {
-                touchIdsRef.current.add(native.changedTouches[i].identifier);
-              }
-            }
-          }
-          const finalFingers = Math.max(maxFingersRef.current, touchIdsRef.current.size);
+          const finalFingers = maxFingersRef.current;
 
           logGesture(
             `touchEnd moved=${movedRef.current} maxFingers=${finalFingers} state=${gestureStateRef.current}`
@@ -252,7 +228,7 @@ export function useTrackpadGesture({
           } else {
             gestureStateRef.current = GESTURE_IDLE;
           }
-          lastTouchPosRef.current = null;
+          lastCentroidRef.current = null;
         },
         onPanResponderTerminate: () => {
           if (onFlushMove) onFlushMove();
@@ -260,7 +236,7 @@ export function useTrackpadGesture({
             if (onDrag) onDrag(false, 'left');
           }
           gestureStateRef.current = GESTURE_IDLE;
-          lastTouchPosRef.current = null;
+          lastCentroidRef.current = null;
         }
       }),
     [
@@ -283,43 +259,51 @@ export function useTrackpadGesture({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: (evt) => {
-          const activeTouch =
-            evt?.nativeEvent?.changedTouches?.[0] || evt?.nativeEvent?.touches?.[0];
-          if (activeTouch) {
-            activeTouchIdRef.current = activeTouch.identifier;
-            lastScrollYRef.current = activeTouch.pageY;
+          const touches = extractTouches(evt);
+          const activeTouch = touches[0];
+          if (activeTouch && activeTouch.identifier !== undefined) {
+            scrollActiveTouchIdRef.current = activeTouch.identifier;
+            scrollLastYRef.current = activeTouch.pageY;
             logGesture(`scrollStrip activeTouch=${activeTouch.identifier}`);
           } else {
-            activeTouchIdRef.current = null;
-            lastScrollYRef.current = null;
+            scrollActiveTouchIdRef.current = null;
+            scrollLastYRef.current = null;
           }
         },
         onPanResponderMove: (evt) => {
-          const touches = evt?.nativeEvent?.touches || [];
-          const changed = evt?.nativeEvent?.changedTouches || [];
-          const activeTouch =
-            touches.find((t) => t.identifier === activeTouchIdRef.current) ||
-            changed.find((t) => t.identifier === activeTouchIdRef.current) ||
-            touches[0] ||
-            changed[0];
+          const touches = extractTouches(evt);
+          if (touches.length === 0) return;
+
+          let activeTouch = null;
+          if (scrollActiveTouchIdRef.current !== null && scrollActiveTouchIdRef.current !== undefined) {
+            activeTouch = touches.find((t) => t.identifier === scrollActiveTouchIdRef.current);
+          }
+          if (!activeTouch) {
+            activeTouch = touches[0];
+            if (activeTouch && activeTouch.identifier !== undefined) {
+              scrollActiveTouchIdRef.current = activeTouch.identifier;
+            }
+          }
+
           const currentY = activeTouch ? activeTouch.pageY : null;
-          if (currentY === null || lastScrollYRef.current === null) {
-            lastScrollYRef.current = currentY;
+          if (currentY === null || scrollLastYRef.current === null) {
+            scrollLastYRef.current = currentY;
             return;
           }
-          const delta = currentY - lastScrollYRef.current;
-          lastScrollYRef.current = currentY;
-          if (Math.abs(delta) > 0.1) {
+
+          const delta = currentY - scrollLastYRef.current;
+          scrollLastYRef.current = currentY;
+          if (Math.abs(delta) > 0.05) {
             if (onScroll) onScroll(-delta * 2.5, 0);
           }
         },
         onPanResponderRelease: () => {
-          activeTouchIdRef.current = null;
-          lastScrollYRef.current = null;
+          scrollActiveTouchIdRef.current = null;
+          scrollLastYRef.current = null;
         },
         onPanResponderTerminate: () => {
-          activeTouchIdRef.current = null;
-          lastScrollYRef.current = null;
+          scrollActiveTouchIdRef.current = null;
+          scrollLastYRef.current = null;
         }
       }),
     [onScroll, onLog]

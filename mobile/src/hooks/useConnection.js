@@ -413,8 +413,9 @@ export function useConnection({ settings }) {
   const touchDiagRef = useRef({
     touchEvents: 0,
     wsSent: 0,
-    coalesced: 0,
-    lost: 0,
+    packetGaps: [],
+    maxGap: 0,
+    lastPacketTime: 0,
     lastDiagAt: Date.now()
   });
 
@@ -422,10 +423,6 @@ export function useConnection({ settings }) {
     if (Math.abs(pendingMoveRef.current.x) > 0.0001 || Math.abs(pendingMoveRef.current.y) > 0.0001) {
       const moveX = pendingMoveRef.current.x;
       const moveY = pendingMoveRef.current.y;
-      const count = pendingMoveRef.current.touchCount || 1;
-      if (count > 1) {
-        touchDiagRef.current.coalesced += count - 1;
-      }
       pendingMoveRef.current = { x: 0, y: 0, touchCount: 0 };
 
       const scaledDx = moveX * settings.mouseSensitivity;
@@ -451,28 +448,50 @@ export function useConnection({ settings }) {
 
     const now = Date.now();
     touchDiagRef.current.touchEvents += 1;
-    pendingMoveRef.current.touchCount = (pendingMoveRef.current.touchCount || 0) + 1;
-    pendingMoveRef.current.x += dx;
-    pendingMoveRef.current.y += dy;
 
-    if (now - lastMoveAtRef.current >= 8) {
-      lastMoveAtRef.current = now;
-      flushPendingMove();
+    const scaledDx = dx * settings.mouseSensitivity;
+    const scaledDy = dy * settings.mouseSensitivity;
+
+    if (Math.abs(scaledDx) > 0.0001 || Math.abs(scaledDy) > 0.0001) {
+      const sent = sendWs({
+        type: 'move',
+        dx: scaledDx,
+        dy: scaledDy,
+        sensitivity: 1,
+        smooth: settings.smoothAcceleration
+      });
+
+      if (sent) {
+        touchDiagRef.current.wsSent += 1;
+        if (touchDiagRef.current.lastPacketTime > 0) {
+          const gap = now - touchDiagRef.current.lastPacketTime;
+          touchDiagRef.current.packetGaps.push(gap);
+          if (gap > touchDiagRef.current.maxGap) {
+            touchDiagRef.current.maxGap = gap;
+          }
+        }
+        touchDiagRef.current.lastPacketTime = now;
+      }
     }
 
     if (now - touchDiagRef.current.lastDiagAt >= 1000) {
       if (touchDiagRef.current.touchEvents > 0) {
+        const gaps = touchDiagRef.current.packetGaps;
+        const avgGap = gaps.length > 0 ? (gaps.reduce((a, b) => a + b, 0) / gaps.length).toFixed(1) : '0.0';
+        const maxGap = touchDiagRef.current.maxGap;
+
         addDebugLog(
           'diag',
-          'Mobile Diag (1s window)',
-          `Touch: ${touchDiagRef.current.touchEvents}/s | WS Sent: ${touchDiagRef.current.wsSent}/s | Coalesced: ${touchDiagRef.current.coalesced} | Lost: ${touchDiagRef.current.lost}`
+          '[MOUSE-LATENCY]',
+          `Touch events: ${touchDiagRef.current.touchEvents}/s | Move packets sent: ${touchDiagRef.current.wsSent}/s | Avg gap: ${avgGap}ms | Max gap: ${maxGap}ms`
         );
       }
       touchDiagRef.current = {
         touchEvents: 0,
         wsSent: 0,
-        coalesced: 0,
-        lost: 0,
+        packetGaps: [],
+        maxGap: 0,
+        lastPacketTime: 0,
         lastDiagAt: now
       };
     }

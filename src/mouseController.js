@@ -890,15 +890,18 @@ function createNutController() {
       }
       await mouse.setPosition(target);
     },
-    async scroll(delta) {
-      const ticks = scrollAccumulator.add(delta);
-      if (ticks === 0) return;
-      const amount = Math.abs(ticks);
-      if (ticks >= 0) {
-        await mouse.scrollDown(amount);
-        return;
+    async scroll(deltaY, deltaX = 0) {
+      const { ticksY, ticksX } = scrollAccumulator.add(deltaY, deltaX);
+      if (ticksY !== 0) {
+        const amount = Math.abs(ticksY);
+        if (ticksY >= 0) await mouse.scrollDown(amount);
+        else await mouse.scrollUp(amount);
       }
-      await mouse.scrollUp(amount);
+      if (ticksX !== 0) {
+        const amount = Math.abs(ticksX);
+        if (ticksX >= 0) await mouse.scrollRight(amount);
+        else await mouse.scrollLeft(amount);
+      }
     },
     async click(button) {
       const normalized = String(button || 'left').toLowerCase();
@@ -965,10 +968,10 @@ function createRobotController() {
       const pos = robot.getMousePos();
       robot.moveMouse(pos.x + stepX, pos.y + stepY);
     },
-    async scroll(delta) {
-      const ticks = scrollAccumulator.add(delta);
-      if (ticks !== 0) {
-        robot.scrollMouse(0, ticks);
+    async scroll(deltaY, deltaX = 0) {
+      const { ticksY, ticksX } = scrollAccumulator.add(deltaY, deltaX);
+      if (ticksY !== 0 || ticksX !== 0) {
+        robot.scrollMouse(ticksX, ticksY);
       }
     },
     async click(button) {
@@ -1105,16 +1108,27 @@ function createLinuxDirectController() {
       directDiagStats.totalDy += Math.abs(stepY);
       directDiagStats.pendingQueue = 0;
     },
-    async scroll(delta) {
-      const ticks = scrollAccumulator.add(delta);
-      if (ticks === 0) return;
-      const btn = ticks >= 0 ? 5 : 4;
-      const amount = Math.abs(ticks);
-      for (let i = 0; i < amount; i += 1) {
-        XTestFakeButtonEvent(display, btn, true, 0);
-        XTestFakeButtonEvent(display, btn, false, 0);
+    async scroll(deltaY, deltaX = 0) {
+      const { ticksY, ticksX } = scrollAccumulator.add(deltaY, deltaX);
+      if (ticksY !== 0) {
+        const btn = ticksY >= 0 ? 5 : 4;
+        const amount = Math.abs(ticksY);
+        for (let i = 0; i < amount; i += 1) {
+          XTestFakeButtonEvent(display, btn, true, 0);
+          XTestFakeButtonEvent(display, btn, false, 0);
+        }
       }
-      XFlush(display);
+      if (ticksX !== 0) {
+        const btn = ticksX >= 0 ? 7 : 6;
+        const amount = Math.abs(ticksX);
+        for (let i = 0; i < amount; i += 1) {
+          XTestFakeButtonEvent(display, btn, true, 0);
+          XTestFakeButtonEvent(display, btn, false, 0);
+        }
+      }
+      if (ticksY !== 0 || ticksX !== 0) {
+        XFlush(display);
+      }
     },
     async click(button) {
       const normalized = String(button || 'left').toLowerCase();
