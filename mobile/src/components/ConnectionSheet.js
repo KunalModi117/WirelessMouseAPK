@@ -1,6 +1,5 @@
 import React, { useEffect, useRef } from 'react';
 import { ActivityIndicator, Animated, Easing, Modal, ScrollView, Text, TextInput, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { TactileButton } from './TactileButton';
 import { styles } from '../styles/styles';
 
@@ -95,7 +94,7 @@ export function ConnectionSheet({
             Check your network connection and try again.
           </Text>
           <TactileButton onPress={onRefreshDiscovery} style={styles.emptyRefreshBtn}>
-            <Ionicons name="refresh-outline" size={16} color="#6B35E8" style={{ marginRight: 6 }} />
+            <Text style={{ color: '#6B35E8', fontSize: 16, fontWeight: 'bold', marginRight: 6 }}>↻</Text>
             <Text style={styles.emptyRefreshBtnText}>Try Again</Text>
           </TactileButton>
         </View>
@@ -110,7 +109,7 @@ export function ConnectionSheet({
           Make sure the PC app is running and your phone is connected to the same Wi-Fi network or hotspot.
         </Text>
         <TactileButton onPress={onRefreshDiscovery} style={styles.emptyRefreshBtn}>
-          <Ionicons name="refresh-outline" size={16} color="#6B35E8" style={{ marginRight: 6 }} />
+          <Text style={{ color: '#6B35E8', fontSize: 16, fontWeight: 'bold', marginRight: 6 }}>↻</Text>
           <Text style={styles.emptyRefreshBtnText}>Refresh</Text>
         </TactileButton>
       </View>
@@ -187,7 +186,7 @@ export function ConnectionSheet({
                     ]}
                   >
                     <Animated.View style={{ transform: [{ rotate: spin }] }}>
-                      <Ionicons name="refresh-outline" size={18} color="#6B35E8" />
+                      <Text style={[styles.refreshIconText, { color: '#6B35E8', fontWeight: 'bold' }]}>↻</Text>
                     </Animated.View>
                   </TactileButton>
                 )}

@@ -1,6 +1,5 @@
 import React from 'react';
-import { View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Text, View } from 'react-native';
 import { TactileButton } from './TactileButton';
 import { styles } from '../styles/styles';
 
@@ -33,10 +32,10 @@ export function Header({
           style={[styles.headerIconBtn, keyboardVisible && styles.headerIconBtnActive]}
           onPress={onToggleKeyboard}
         >
-          <Ionicons name="keypad-outline" size={20} color="#f8fafc" />
+          <Text style={styles.headerIconText}>⌨</Text>
         </TactileButton>
         <TactileButton style={styles.headerIconBtn} onPress={onOpenSettingsModal}>
-          <Ionicons name="settings-outline" size={20} color="#f8fafc" />
+          <Text style={styles.headerIconText}>⚙</Text>
         </TactileButton>
       </View>
     </View>
