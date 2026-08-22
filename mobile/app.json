@@ -6,11 +6,6 @@
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "icon": "./assets/icon.jpeg",
-    "splash": {
-      "image": "./assets/splash.jpeg",
-      "resizeMode": "cover",
-      "backgroundColor": "#030014"
-    },
     "android": {
       "package": "com.wirelessmouse.remote",
       "adaptiveIcon": {
