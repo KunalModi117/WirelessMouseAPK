@@ -4,8 +4,6 @@ import { Pressable, Text, TextInput, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
-import { useFonts } from 'expo-font';
-import { Ionicons } from '@expo/vector-icons';
 
 import { styles } from './src/styles/styles';
 import { useSettings } from './src/hooks/useSettings';
@@ -22,9 +20,6 @@ import { SettingsSheet } from './src/components/SettingsSheet';
 import { LogsSheet } from './src/components/LogsSheet';
 
 export default function App() {
-  const [fontsLoaded] = useFonts({
-    ...Ionicons.font,
-  });
   const {
     settings,
     draftSettings,
@@ -50,10 +45,6 @@ export default function App() {
     onScroll: connection.sendScroll,
     onDrag: connection.sendDrag,
   });
-
-  if (!fontsLoaded) {
-    return null;
-  }
 
   return (
     <SafeAreaProvider>
