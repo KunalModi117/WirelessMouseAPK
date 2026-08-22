@@ -130,7 +130,7 @@ export function SettingsSheet({
                   <Switch
                     value={draftSettings.smoothAcceleration}
                     onValueChange={(val) => setDraftSettings((curr) => ({ ...curr, smoothAcceleration: val }))}
-                    trackColor={{ false: '#334155', true: '#0a84ff' }}
+                    trackColor={{ false: '#334155', true: '#6B35E8' }}
                     thumbColor="#ffffff"
                   />
                 </View>

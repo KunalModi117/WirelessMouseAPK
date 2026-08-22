@@ -1,9 +1,12 @@
 import 'react-native-gesture-handler';
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
+import { useFonts } from 'expo-font';
+import { Ionicons } from '@expo/vector-icons';
+import * as SplashScreen from 'expo-splash-screen';
 
 import { styles } from './src/styles/styles';
 import { useSettings } from './src/hooks/useSettings';
@@ -19,7 +22,25 @@ import { ConnectionSheet } from './src/components/ConnectionSheet';
 import { SettingsSheet } from './src/components/SettingsSheet';
 import { LogsSheet } from './src/components/LogsSheet';
 
+SplashScreen.preventAutoHideAsync().catch(() => {});
+
 export default function App() {
+  const [fontsLoaded] = useFonts({
+    ...Ionicons.font,
+  });
+  const [appIsReady, setAppIsReady] = useState(false);
+
+  useEffect(() => {
+    async function prepare() {
+      if (fontsLoaded) {
+        // Intentionally keep splash screen visible for 1 second
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await SplashScreen.hideAsync().catch(() => {});
+        setAppIsReady(true);
+      }
+    }
+    prepare();
+  }, [fontsLoaded]);
   const {
     settings,
     draftSettings,
@@ -44,8 +65,11 @@ export default function App() {
     onClick: connection.sendClick,
     onScroll: connection.sendScroll,
     onDrag: connection.sendDrag,
-    onLog: connection.addDebugLog
   });
+
+  if (!appIsReady) {
+    return null;
+  }
 
   return (
     <SafeAreaProvider>

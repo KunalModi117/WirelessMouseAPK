@@ -35,8 +35,8 @@ export const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.08)'
   },
   headerIconBtnActive: {
-    backgroundColor: 'rgba(10, 132, 255, 0.25)',
-    borderColor: '#0a84ff'
+    backgroundColor: 'rgba(107, 53, 232, 0.25)',
+    borderColor: '#6B35E8'
   },
   headerIconText: {
     color: '#f8fafc',
@@ -436,9 +436,9 @@ export const styles = StyleSheet.create({
     textAlign: 'center'
   },
   emptyRefreshBtn: {
-    backgroundColor: 'rgba(10, 132, 255, 0.15)',
+    backgroundColor: 'rgba(107, 53, 232, 0.15)',
     borderWidth: 1,
-    borderColor: 'rgba(10, 132, 255, 0.3)',
+    borderColor: 'rgba(107, 53, 232, 0.3)',
     paddingHorizontal: 18,
     paddingVertical: 10,
     borderRadius: 12,
@@ -446,7 +446,7 @@ export const styles = StyleSheet.create({
     alignItems: 'center'
   },
   emptyRefreshBtnText: {
-    color: '#0a84ff',
+    color: '#6B35E8',
     fontSize: 14,
     fontWeight: '600'
   },
@@ -470,7 +470,7 @@ export const styles = StyleSheet.create({
     marginTop: 2
   },
   connectPill: {
-    backgroundColor: '#0a84ff',
+    backgroundColor: '#6B35E8',
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 20
@@ -506,7 +506,7 @@ export const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.08)'
   },
   primaryActionBtn: {
-    backgroundColor: '#0a84ff',
+    backgroundColor: '#6B35E8',
     paddingVertical: 14,
     borderRadius: 14,
     alignItems: 'center',
@@ -556,7 +556,7 @@ export const styles = StyleSheet.create({
     paddingVertical: 14
   },
   groupedActionText: {
-    color: '#0a84ff',
+    color: '#6B35E8',
     fontSize: 15,
     fontWeight: '500'
   },
@@ -583,7 +583,7 @@ export const styles = StyleSheet.create({
     justifyContent: 'center'
   },
   stepperBtnText: {
-    color: '#0a84ff',
+    color: '#6B35E8',
     fontSize: 18,
     fontWeight: '600'
   },
@@ -661,7 +661,7 @@ export const styles = StyleSheet.create({
   },
   primaryActionBtnSmall: {
     flex: 1,
-    backgroundColor: '#0a84ff',
+    backgroundColor: '#6B35E8',
     paddingVertical: 12,
     borderRadius: 14,
     alignItems: 'center',

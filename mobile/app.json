@@ -1,20 +1,20 @@
 {
   "expo": {
-    "name": "CursorGo",
+    "name": "ZapMouse",
     "slug": "wirelessmouseapk",
     "version": "0.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/icon.jpeg",
     "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "contain",
+      "image": "./assets/splash.jpeg",
+      "resizeMode": "cover",
       "backgroundColor": "#030014"
     },
     "android": {
       "package": "com.wirelessmouse.remote",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/icon.jpeg",
         "backgroundColor": "#030014"
       },
       "permissions": [

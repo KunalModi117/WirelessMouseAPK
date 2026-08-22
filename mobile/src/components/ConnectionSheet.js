@@ -1,5 +1,6 @@
-import React from 'react';
-import { ActivityIndicator, Modal, ScrollView, Text, TextInput, View } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { ActivityIndicator, Animated, Easing, Modal, ScrollView, Text, TextInput, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { TactileButton } from './TactileButton';
 import { styles } from '../styles/styles';
 
@@ -18,6 +19,34 @@ export function ConnectionSheet({
   onDisconnect,
   onSaveManual
 }) {
+  const spinAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    let anim;
+    if (discoveryStatus === 'searching') {
+      spinAnim.setValue(0);
+      anim = Animated.loop(
+        Animated.timing(spinAnim, {
+          toValue: 1,
+          duration: 1000,
+          easing: Easing.linear,
+          useNativeDriver: true
+        })
+      );
+      anim.start();
+    } else {
+      spinAnim.setValue(0);
+    }
+    return () => {
+      if (anim) anim.stop();
+    };
+  }, [discoveryStatus]);
+
+  const spin = spinAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg']
+  });
+
   const renderDiscoveredContent = () => {
     if (!discoveryEnabled) {
       return (
@@ -30,7 +59,7 @@ export function ConnectionSheet({
     if (discoveryStatus === 'searching') {
       return (
         <View style={styles.searchingCard}>
-          <ActivityIndicator size="small" color="#0a84ff" style={{ marginRight: 10 }} />
+          <ActivityIndicator size="small" color="#6B35E8" style={{ marginRight: 10 }} />
           <Text style={styles.searchingText}>Searching for computers...</Text>
         </View>
       );
@@ -66,7 +95,8 @@ export function ConnectionSheet({
             Check your network connection and try again.
           </Text>
           <TactileButton onPress={onRefreshDiscovery} style={styles.emptyRefreshBtn}>
-            <Text style={styles.emptyRefreshBtnText}>🔄 Try Again</Text>
+            <Ionicons name="refresh-outline" size={16} color="#6B35E8" style={{ marginRight: 6 }} />
+            <Text style={styles.emptyRefreshBtnText}>Try Again</Text>
           </TactileButton>
         </View>
       );
@@ -80,7 +110,8 @@ export function ConnectionSheet({
           Make sure the PC app is running and your phone is connected to the same Wi-Fi network or hotspot.
         </Text>
         <TactileButton onPress={onRefreshDiscovery} style={styles.emptyRefreshBtn}>
-          <Text style={styles.emptyRefreshBtnText}>🔄 Refresh</Text>
+          <Ionicons name="refresh-outline" size={16} color="#6B35E8" style={{ marginRight: 6 }} />
+          <Text style={styles.emptyRefreshBtnText}>Refresh</Text>
         </TactileButton>
       </View>
     );
@@ -155,11 +186,9 @@ export function ConnectionSheet({
                       discoveryStatus === 'searching' && styles.refreshIconBtnDisabled
                     ]}
                   >
-                    {discoveryStatus === 'searching' ? (
-                      <ActivityIndicator size="small" color="#0a84ff" />
-                    ) : (
-                      <Text style={styles.refreshIconText}>🔄</Text>
-                    )}
+                    <Animated.View style={{ transform: [{ rotate: spin }] }}>
+                      <Ionicons name="refresh-outline" size={18} color="#6B35E8" />
+                    </Animated.View>
                   </TactileButton>
                 )}
               </View>
